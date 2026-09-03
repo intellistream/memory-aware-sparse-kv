@@ -1,0 +1,24 @@
+\documentclass[sigconf,review,anonymous]{acmart}
+\title{MemEcho: Memory-Aware Lossless KV Prefetching for Native Sparse-Attention LLM Serving}
+\begin{document}
+\begin{abstract}
+Native sparse-attention models reduce attention computation but retain a KV
+state that grows with context length. Host offloading can recover accelerator
+capacity, yet late recall of model-selected KV blocks remains on the critical
+path. Existing lossless prefetching exploits numerical predictability and
+sequential query processing. Agent workloads, however, introduce tool calls,
+memory writes, consolidation, supersession, and task switches that can break
+this locality. MemEcho asks whether explicit memory-state transitions can
+predict the exact sparse KV working set before the native indexer consumes it.
+It uses memory events only for residency and prefetch decisions; the model's
+indexer remains authoritative, so prediction errors cannot change the selected
+KV set or output. This repository first performs a necessity study and admits
+the mechanism only when matched agent traces expose repeatable
+memory-transition-induced recall stalls.
+\end{abstract}
+\maketitle
+\section{Status}
+Research contract established; no performance or NPU claim has yet been made.
+\bibliographystyle{ACM-Reference-Format}
+\end{document}
+
