@@ -6,4 +6,6 @@ paper/*.out
 paper/*.pdf
 __pycache__/
 .venv/
-
+docs/paper/*
+docs/slack.md
+docs/m0-task-checklist.md
