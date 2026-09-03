@@ -1,0 +1,3 @@
+[submodule "runtime/ECHO"]
+	path = runtime/ECHO
+	url = https://github.com/sjtu-zhao-lab/ECHO.git
