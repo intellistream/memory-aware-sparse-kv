@@ -56,3 +56,41 @@ prefetch baseline without changing outputs. Stop or reframe if the phenomenon
 is rare, prediction overhead dominates, or gains disappear under matched
 concurrency and device-memory budgets.
 
+
+## 2026-09-09 clarification: causal lead time and stronger controls
+
+This amendment preserves the original native-sparse/lossless question and the
+existing two-workload, 20% necessity gate. It does not authorize implementation
+or hardware work, and does not change the student owner.
+
+The architecture chain is: memory event available before the next indexer ->
+additional selected-block predictability -> early transfer -> less exposed
+recall stall, after prediction and wasted-prefetch cost. Record event availability,
+prediction, DMA submission/completion and consumption timestamps. Events inferred
+from future queries are forbidden. Equal selected-block overlap without enough
+lead time is not a useful predictor. Adjacent-layer similarity is neither assumed
+nor required; stratify models that actually share selections and those that do not.
+
+Strong controls now include native full-resident execution, demand-only host
+offload, ECHO's supported lossless prefetch, and HiSparse's supported exact
+hierarchical cache (including layer prefetch only where supported). Compare on
+the same checkpoint/indexer, graph mode, host/device byte budget, transfer
+bandwidth and concurrency. Unsupported ports are reported as unavailable, not
+weak substitutes. Add event-shuffled and event-removed controls, with identical
+prediction/transfer budgets, and an explicitly nondeployable future-selection
+oracle to measure headroom. No quality-approximate dense-KV eviction is a
+matched lossless control.
+
+Every consumed block must have the eventual native indexer's exact identity,
+version and bytes; misses block for authoritative fetch. Cancellation and slot
+reuse cannot expose a previous request's state. Wrong predictions may waste
+bandwidth and increase tail latency. Report both wasted traffic and p99; do not
+trade worse tail or fewer completed requests for apparent recall improvement.
+
+References verified against primary sources:
+- ECHO: https://www.usenix.org/conference/osdi26/presentation/liu-guangda
+- HiSparse: https://arxiv.org/abs/2608.07009
+
+The distinct hypothesis is incremental value of early memory events over these
+controls. Neither ECHO nor HiSparse is assumed to lack all relevant locality
+signals; their supported implementations must be pinned before a comparison.
