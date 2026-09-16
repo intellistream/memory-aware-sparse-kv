@@ -30,3 +30,11 @@ The first milestone is a necessity study. Implementation expansion is gated on
 showing that tool calls, memory writes, consolidation, or task switches create
 material recall stalls that ECHO-style locality alone cannot hide.
 
+
+## Strong-baseline and lead-time gate
+
+The [research contract](docs/research-contract.md) now explicitly includes ECHO
+and HiSparse, event-shuffled controls, timestamped causal lead time, and exact
+block-version checks. Native sparse selection is unchanged; no layer-similarity
+assumption or quality-approximate eviction is introduced. This is advisor-authored
+research planning; implementation and experiments remain with `@Lan-Fa`.

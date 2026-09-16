@@ -1,24 +1,63 @@
 \documentclass[sigconf,review,anonymous]{acmart}
+\usepackage{url}
+\emergencystretch=3em
+\settopmatter{printacmref=false,printccs=false}
+\setcopyright{none}
+\acmConference[Research Proposal]{Research Proposal}{September 2026}{}
+\acmDOI{}
+\acmISBN{}
+\acmYear{2026}
+\copyrightyear{2026}
+\renewcommand\footnotetextcopyrightpermission[1]{}
 \title{MemEcho: Memory-Aware Lossless KV Prefetching for Native Sparse-Attention LLM Serving}
 \begin{document}
 \begin{abstract}
 Native sparse-attention models reduce attention computation but retain a KV
 state that grows with context length. Host offloading can recover accelerator
 capacity, yet late recall of model-selected KV blocks remains on the critical
-path. Existing lossless prefetching exploits numerical predictability and
-sequential query processing. Agent workloads, however, introduce tool calls,
+path. Existing lossless prefetching and hierarchical caches provide strong
+numerical, query-sequential and, where supported, layer-wise controls. Agent workloads, however, introduce tool calls,
 memory writes, consolidation, supersession, and task switches that can break
 this locality. MemEcho asks whether explicit memory-state transitions can
 predict the exact sparse KV working set before the native indexer consumes it.
 It uses memory events only for residency and prefetch decisions; the model's
-indexer remains authoritative, so prediction errors cannot change the selected
-KV set or output. This repository first performs a necessity study and admits
+indexer remains authoritative, with authoritative miss handling and identity checks required to preserve
+the selected KV set and output. This repository first performs a necessity study and admits
 the mechanism only when matched agent traces expose repeatable
 memory-transition-induced recall stalls.
 \end{abstract}
 \maketitle
+\section{Mechanism and Causal Boundary}
+A memory event is useful only if it is observable before a later indexer and
+predicts selected blocks early enough to finish their transfer. Event overlap
+without lead time is insufficient. The proposed policy changes placement and
+prefetch timing, never the native indexer's selection. Each consumed block
+must match the request, layer, position, version and bytes of the authoritative
+state; misses wait for exact recall. Cancellation and slot reuse must preserve
+this identity. No mechanism or runtime correctness proof exists yet.
+
+\section{Strong Baselines and Necessity}
+ECHO provides graph-friendly management and lossless prefetching~\cite{echo}.
+HiSparse provides an exact hierarchical sparse cache and supports layer-wise
+prefetch for models with shared selections~\cite{hisparse}. Both are mandatory
+supported controls, alongside full residency and demand-only offload; adjacent
+layer similarity is not a prerequisite for the proposed event signal.
+
+Hold checkpoint, indexer, graph mode, concurrency, host/device bytes and
+transfer budgets fixed. Measure event availability, prediction and DMA timing,
+exposed recall stalls, wasted bytes and request tails. Compare event-conditioned,
+event-removed and event-shuffled policies; a future-selection oracle supplies
+headroom only. Preserve the existing gate: at least two representative
+workloads and at least 20\% less synchronous recall or stall than the strongest
+supported sequential baseline, with identical outputs. The new stronger
+controls must also be beaten before claiming incremental value. Stop if the
+signal is late, baseline prefetch hides the stall, or overhead/tail regressions
+erase benefit. Missing baseline support is reported, not replaced by a weaker
+port and labeled a win.
+
 \section{Status}
 Research contract established; no performance or NPU claim has yet been made.
 \bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
 \end{document}
 
