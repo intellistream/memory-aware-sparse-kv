@@ -221,7 +221,9 @@ class SupervisorService:
         env = ','.join(f'{key}="{value}"' for key, value in self.environment().items())
         config = (f'[unix_http_server]\nfile={self.runtime}/supervisor.sock\nchmod=0700\n'
                   f'[supervisord]\nlogfile={self.runtime}/supervisord.log\npidfile={self.runtime}/supervisord.pid\n'
-                  'nodaemon=false\n[supervisorctl]\n'
+                  'nodaemon=false\n[rpcinterface:supervisor]\n'
+                  'supervisor.rpcinterface_factory=supervisor.rpcinterface:make_main_rpcinterface\n'
+                  '[supervisorctl]\n'
                   f'serverurl=unix://{self.runtime}/supervisor.sock\n'
                   f'[program:{SERVICE}]\ncommand={shlex.join(cmd)}\ndirectory={self.root}\n'
                   f'environment={env}\nautostart=false\nautorestart=true\n'

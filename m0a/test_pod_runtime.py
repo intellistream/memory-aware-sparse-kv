@@ -31,6 +31,7 @@ class PodRuntimeTests(unittest.TestCase):
             self.assertEqual(json.loads(command[command.index('--speculative-config') + 1])['method'], 'mtp')
             self.assertTrue(json.loads(command[command.index('--additional-config') + 1])['enable_dsa_cp'])
             self.assertIn('autorestart=true', config)
+            self.assertIn('[rpcinterface:supervisor]', config)
             self.assertIn('stopasgroup=true', config)
             self.assertEqual(json.loads((path.parent / 'service-command.json').read_text())['command'], command)
 
