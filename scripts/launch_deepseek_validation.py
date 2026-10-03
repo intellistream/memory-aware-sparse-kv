@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Print a DeepSeek validation plan; live execution awaits a verified Pod adapter."""
+"""Launch a supervised eight-NPU Pod trace-replay run with checksum synchronization."""
 from __future__ import annotations
 import argparse
+import hashlib
 import json
+import os
+import subprocess
 import sys
 import time
 import uuid
@@ -21,7 +24,9 @@ from scripts.launch_single_npu_validation import (remote, transfer_files, archiv
 def deployment_files():
     files=list((ROOT/'m0a').glob('*.py'))
     files += [ROOT/'m0a/model_profiles.json',ROOT/'m0a/pairs.json',ROOT/'m0a/source/m0a_selected_trace.py',
-              ROOT/'scripts/launch_single_npu_validation.py',Path(__file__).resolve(),ROOT/'docs/deepseek-validation.md']
+              ROOT/'scripts/launch_single_npu_validation.py',Path(__file__).resolve(),ROOT/'docs/deepseek-validation.md',
+              ROOT/'m0a/vllm-ascend-trace.patch',ROOT/'scripts/serve_dsv4_pod.py',
+              ROOT/'docs/deepseek-pod-runbook.md']
     return sorted(files)
 
 
@@ -103,7 +108,8 @@ def launch(args):
           'window_tokens':32,'capacity_mib':[64,128],'budget_scopes':['per_rank','aggregate'],'prefetch_budget_mib':8,
           'total_timeout_seconds':TOTAL_SECONDS,'stage_sync_required':True,'restore_original_service':True,
           'container_name':'memecho-'+run_id,'executed':args.execute,
-          'validation_mode':args.validation_mode,'execution_available':False}
+          'validation_mode':args.validation_mode,'runtime':args.runtime,'model_dir':str(args.model_dir) if args.model_dir else None,
+          'execution_available':args.runtime=='pod' and args.validation_mode=='trace-replay'}
     plan.update(diagnostic_only=getattr(args,'diagnostic_only',False),diagnostic_requests_per_candidate=20,
                 repair=getattr(args,'repair',False),operator_replays=20,deterministic_rank_verification=bool(getattr(args,'repair',False)),
                 candidate_order=['original_fresh','eager','eager_single_stream','eager_single_stream_no_mtp',
@@ -117,58 +123,118 @@ def launch(args):
     if not args.execute:
         print(json.dumps(plan,ensure_ascii=False,indent=2))
         return 0
-    raise RuntimeError('Live execution is disabled: the launcher requires the old Docker socket and /workspace layout. '
-                       'A verified Kubernetes Pod adapter is required before --execute can run safely.')
-    recovery = previous_run_barrier(args)
+    require(args.runtime=='pod', 'Live execution is disabled for the old Docker runtime; pass --runtime pod')
+    require(args.validation_mode=='trace-replay' and not args.repair and not args.diagnostic_only,
+            'Pod execution requires trace-replay without repair/diagnostic mode')
+    require(args.model_dir and args.model_dir.is_absolute() and str(args.model_dir).startswith('/models/'),
+            'Pass the absolute read-only --model-dir under /models')
+    return launch_pod(args, plan, directory, remote_directory)
+
+
+def launch_pod(args, plan, directory, remote_directory):
+    """Transfer a checked source snapshot, start the service, then detach the worker."""
     directory.mkdir(parents=True,exist_ok=False)
-    write_json(directory/'prior-run-recovery.json',recovery)
     write_json(directory/'launch.json',plan)
     files=deployment_files()
-    commit=archive_code(directory,files,message='Implement DeepSeek operator diagnosis, deterministic candidates and recovery')
-    deployment={'files':[{'path':'implementation/'+str(p.relative_to(ROOT)),'sha256':sha256_file(p),'size':p.stat().st_size} for p in files], 'git_commit':commit}
+    commit=archive_code(directory,files,message='Archive Pod DeepSeek trace-replay implementation')
+    deployment={'files':[{'path':'implementation/'+str(p.relative_to(ROOT)),'sha256':sha256_file(p),'size':p.stat().st_size}
+                         for p in files], 'git_commit':commit}
     write_json(directory/'deployment.json',deployment)
+    # Bundle the actual PR branch separately from the exact worker snapshot.
+    branch=subprocess.check_output(['git','branch','--show-current'],cwd=ROOT,text=True).strip()
+    head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+    require(branch=='feat/deepseek-trace-replay-offline', 'Expected the existing draft PR branch')
+    require(not subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True).strip(),
+            'Commit all Pod adapter changes before live execution')
+    bundle=directory/'pr-branch.bundle'
+    subprocess.run(['git','bundle','create',str(bundle),branch],cwd=ROOT,check=True)
+    subprocess.run(['git','bundle','verify',str(bundle)],cwd=ROOT,check=True,stdout=subprocess.DEVNULL)
+    write_json(directory/'branch-provenance.json',{'branch':branch,'head':head,'bundle_sha256':sha256_file(bundle)})
     remote(args.host,'from pathlib import Path\nPath('+repr(remote_directory)+').mkdir(parents=True,exist_ok=False)\n')
     transfer_files(args.host,remote_directory,[(p,str(p.relative_to(ROOT))) for p in files],destination_prefix='implementation/')
-    transfer_files(args.host,remote_directory,[(directory/n,n) for n in ('launch.json','code-provenance.json','implementation.bundle','deployment.json')])
-    worker_script=str(PurePosixPath(remote_directory)/'implementation/m0a/deepseek_validation.py')
-    code=('import pathlib,subprocess,json,hashlib\np=pathlib.Path('+repr(remote_directory)+')\n'
-          'for r in '+repr(deployment['files'])+':\n'
-          ' f=p/r["path"]\n assert f.stat().st_size==r["size"] and hashlib.sha256(f.read_bytes()).hexdigest()==r["sha256"]\n'
-          'with (p/"worker.log").open("ab") as log:\n'
-          ' child=subprocess.Popen('+repr(['python3','-u',worker_script,'--root',args.remote_root,'--run-id',run_id])+',stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True,close_fds=True)\n'
-          '(p/"worker.pid").write_text(str(child.pid)+"\\n")\nprint(json.dumps({"worker_pid":child.pid}))\n')
-    started=json.loads(remote(args.host,code))
-    try:
-        sync=detached_process([sys.executable,'-u',str(Path(__file__).resolve()),'--guardian','--host',args.host,
-                              '--remote-directory',remote_directory,'--local-directory',str(directory)],directory/'sync.log')
-        (directory/'sync.pid').write_text(str(sync.pid)+'\n')
-        deadline=time.monotonic()+180
-        while time.monotonic()<deadline:
-            require(alive(sync.pid),'Local guardian exited before startup verification')
-            if (directory/'sync-status.json').exists():
-                state=json.loads((directory/'sync-status.json').read_text())
-                if state.get('last_verified_checkpoint')=='00-bootstrap':
-                    fresh=status_remote(args.host,remote_directory)
-                    require(fresh['worker_alive'] and fresh['worker_pid']==started['worker_pid'] and fresh['status']=='running', 'Server failed at startup')
-                    require((datetime.now(timezone.utc)-datetime.fromisoformat(fresh['heartbeat'])).total_seconds()<45,'Stale server heartbeat')
-                    evidence=dict(plan,**started,sync_pid=sync.pid,local_git_commit=commit,
-                                  verified_checkpoint='00-bootstrap',verified_files=state['verified_files'],
-                                  manifest_sha256=state['last_manifest_sha256'],heartbeat=fresh['heartbeat'],
-                                  worker_log=remote_directory+'/worker.log',local_sync_log=str(directory/'sync.log'),
-                                  status_path=str(directory/'status.json'),sync_status_path=str(directory/'sync-status.json'))
-                    write_json(directory/'startup-evidence.json',evidence)
-                    print(json.dumps(evidence,ensure_ascii=False,indent=2))
-                    return 0
-            time.sleep(1)
-        raise TimeoutError('Detached startup verification timed out')
-    except BaseException:
-        remote(args.host,'import os,signal\ntry: os.kill('+str(started['worker_pid'])+',signal.SIGTERM)\nexcept ProcessLookupError: pass\n')
-        raise
+    transfer_files(args.host,remote_directory,[(directory/n,n) for n in
+        ('launch.json','code-provenance.json','implementation.bundle','deployment.json','pr-branch.bundle','branch-provenance.json')])
+    bootstrap='''import hashlib,json,os,pathlib,subprocess,sys,urllib.request
+p=pathlib.Path(DIRECTORY)
+for row in FILES:
+ f=p/row['path']
+ assert f.stat().st_size==row['size'] and hashlib.sha256(f.read_bytes()).hexdigest()==row['sha256']
+provenance=json.loads((p/'branch-provenance.json').read_text())
+assert hashlib.sha256((p/'pr-branch.bundle').read_bytes()).hexdigest()==provenance['bundle_sha256']
+checkout=pathlib.Path('/root')/('memecho-deploy-'+p.name)
+assert not checkout.exists()
+subprocess.run(['git','clone','-b',provenance['branch'],str(p/'pr-branch.bundle'),str(checkout)],check=True)
+assert subprocess.check_output(['git','-C',str(checkout),'rev-parse','HEAD'],text=True).strip()==provenance['head']
+sys.path.insert(0,str(p/'implementation'))
+from m0a.pod_runtime import SupervisorService,preflight,health,port_available,same_process,sha256,service_command
+from m0a.run_requests import request
+model=pathlib.Path(MODEL)
+root=pathlib.Path(ROOT)
+service=SupervisorService(root,model)
+for old in sorted((root/'m0a/runs').glob('deepseek_*/status.json')):
+ state=json.loads(old.read_text())
+ identity=old.parent/'worker-identity.json'
+ if identity.exists() and same_process(json.loads(identity.read_text())) and state['stage']!='finished':
+  raise RuntimeError('Prior Pod validation is still active: '+str(old.parent))
+if port_available():
+ preflight(model,expect_port_free=True)
+ service.install()
+ service.control('start')
+else:
+ preflight(model,expect_port_free=False)
+ saved=json.loads((service.runtime/'service-command.json').read_text())
+ assert saved['command']==service_command(model) and saved['model_dir']==str(model)
+ assert service.identity()
+models=health(model)
+result=request({'model':'dsv4','messages':[{'role':'user','content':'Reply with OK.'}],
+                'temperature':0,'max_tokens':8})
+assert result['choices'] and result['usage']['completion_tokens']>0
+evidence={'checkout':str(checkout),'git_commit':provenance['head'],'models':models,
+          'process_identity':service.identity(),'supervisor_config_sha256':sha256(service.conf),
+          'short_request_id':result['id']}
+(p/'service-bootstrap.json').write_text(json.dumps(evidence,indent=2)+'\\n')
+print(json.dumps(evidence))
+'''.replace('DIRECTORY',repr(remote_directory)).replace('FILES',repr(deployment['files'])).replace('MODEL',repr(str(args.model_dir))).replace('ROOT',repr(args.remote_root))
+    bootstrap_result=json.loads(remote(args.host,bootstrap,timeout=1200))
+    write_json(directory/'service-bootstrap.json',bootstrap_result)
+    start='''import json,os,pathlib,subprocess,sys
+p=pathlib.Path(DIRECTORY)
+env=dict(os.environ,PYTHONPATH=str(p/'implementation'))
+with (p/'worker.log').open('ab') as log:
+ child=subprocess.Popen([sys.executable,'-u','-m','m0a.deepseek_pod_validation',
+                         '--root',ROOT,'--run-id',p.name],env=env,
+                        stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,
+                        start_new_session=True,close_fds=True)
+(p/'worker.pid').write_text(str(child.pid)+'\\n')
+print(json.dumps({'worker_pid':child.pid}))
+'''.replace('DIRECTORY',repr(remote_directory)).replace('ROOT',repr(args.remote_root))
+    started=json.loads(remote(args.host,start))
+    sync=detached_process([sys.executable,'-u',str(Path(__file__).resolve()),'--guardian','--host',args.host,
+                          '--remote-directory',remote_directory,'--local-directory',str(directory)],directory/'sync.log')
+    (directory/'sync.pid').write_text(str(sync.pid)+'\n')
+    deadline=time.monotonic()+180
+    while time.monotonic()<deadline:
+        require(alive(sync.pid),'Local guardian exited before startup verification')
+        if (directory/'sync-status.json').exists():
+            state=json.loads((directory/'sync-status.json').read_text())
+            if state.get('last_verified_checkpoint')=='00-bootstrap':
+                fresh=status_remote(args.host,remote_directory)
+                require(fresh['worker_alive'] and fresh['worker_pid']==started['worker_pid'], 'Server worker failed at startup')
+                evidence=dict(plan,**started,sync_pid=sync.pid,local_git_commit=commit,
+                              verified_checkpoint='00-bootstrap',service_bootstrap=bootstrap_result,
+                              worker_log=remote_directory+'/worker.log',local_sync_log=str(directory/'sync.log'))
+                write_json(directory/'startup-evidence.json',evidence)
+                print(json.dumps(evidence,ensure_ascii=False,indent=2))
+                return 0
+        time.sleep(1)
+    raise TimeoutError('Detached Pod startup verification timed out; watchdog and guardian own recovery')
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute',action='store_true')
+    parser.add_argument('--runtime',choices=('pod','docker'),default='docker')
+    parser.add_argument('--model-dir',type=Path)
     parser.add_argument('--validation-mode',choices=('strict','trace-replay'),default='strict')
     parser.add_argument('--diagnostic-only',action='store_true',help='Stop after stability diagnostics and restore the original service')
     parser.add_argument('--repair',action='store_true',help='Test deterministic candidates, then diagnose and replay operators if stability fails')
@@ -180,6 +246,8 @@ def main():
     args=parser.parse_args()
     if args.validation_mode=='trace-replay' and (args.repair or args.diagnostic_only):
         parser.error('--validation-mode trace-replay cannot be combined with --repair or --diagnostic-only')
+    if args.runtime=='pod' and args.model_dir is None:
+        parser.error('--runtime pod requires --model-dir')
     if args.guardian:
         require(args.remote_directory and args.local_directory,'Guardian paths required')
         return guardian(args.host,args.remote_directory,args.local_directory)

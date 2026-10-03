@@ -1,0 +1,52 @@
+# Current-Pod DeepSeek service and trace replay
+
+This runbook applies to the current eight-910B2 Pod. The weight mount is read-only at
+`/models/DeepSeek-V4-Flash-W8A8`; all code, supervisor files, logs and run artifacts live under
+`/root`. A Pod rebuild does not automatically restart the service.
+
+## Repeatable service startup
+
+After the Git bundle has been checked out under `/root/memecho-deploy-<run-id>`, run:
+
+```bash
+cd /root/memecho-deploy-<run-id>
+python3 scripts/serve_dsv4_pod.py --execute \
+  --root /root/memory-aware-sparse-kv \
+  --model-dir /models/DeepSeek-V4-Flash-W8A8
+```
+
+The script checks all eight NPUs, `/dev/shm`, the saved model metadata SHA-256 hashes,
+70 indexed weight files, installed vLLM/Ascend versions and port 8900. It starts the fixed
+TP=8, W8A8, MTP, DSA CP command through `/root/memory-aware-sparse-kv/runtime/deepseek-pod/supervisord.conf`.
+It verifies `/health`, `/v1/models` and a short generation request. The saved service command,
+environment allowlist, configuration hash and process identity are in the same runtime directory.
+`supervisorctl -c /root/memory-aware-sparse-kv/runtime/deepseek-pod/supervisord.conf status memecho-deepseek`
+shows the current process.
+
+## Validation launch
+
+From the clean, committed PR branch on the local machine:
+
+```bash
+python3 scripts/launch_deepseek_validation.py --execute --runtime pod \
+  --model-dir /models/DeepSeek-V4-Flash-W8A8 \
+  --validation-mode trace-replay --host hust \
+  --remote-root /root/memory-aware-sparse-kv
+```
+
+The launcher transfers a SHA-256 checked Git bundle and an exact worker snapshot. It clones
+the bundle into a new `/root/memecho-deploy-<run-id>` directory; it does not alter the recovered
+branch or untracked recovery files. The worker holds an exclusive lock, saves the supervised
+service identity and configuration, then pauses it. Trace-off and trace-on each require 48 valid
+requests. The trace source is copied from the installed vLLM Ascend package into the run directory,
+patched with `m0a/vllm-ascend-trace.patch`, checked for import origin and hashed before the service
+is paused. An independent watchdog stops only processes bearing the exact run marker and restores
+the supervised service after failure, timeout or worker death. The local guardian verifies each
+checkpoint and final artifact hashes. CPU replay runs after restoration.
+
+The final `report.json` must say `engineering_validated`, with `strict_output_acceptance` set to
+`not_qualified`; output differences remain in the phase files. The four replay reports are
+`replay-{per_rank,aggregate}-{64,128}mib/report.json`. This is offline selected-set replay,
+not an online KV offload or performance measurement. The model mount has no readable commit marker
+or saved per-shard hashes, so metadata agreement and complete indexed shard sizes do not prove
+every weight byte matches the original download.
