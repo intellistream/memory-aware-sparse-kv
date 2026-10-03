@@ -50,3 +50,19 @@ The final `report.json` must say `engineering_validated`, with `strict_output_ac
 not an online KV offload or performance measurement. The model mount has no readable commit marker
 or saved per-shard hashes, so metadata agreement and complete indexed shard sizes do not prove
 every weight byte matches the original download.
+
+If all 48+48 requests and native rows were archived but a CPU validator needs a
+correction, keep the capture and its failed status unchanged. From a new checked
+out validation commit on the Pod, run:
+
+```bash
+python3 scripts/resume_deepseek_pod_cpu.py \
+  --root /root/memory-aware-sparse-kv --run-id <capture-run-id>
+```
+
+This accepts only the archived `Invalid CP chunk range` failure, checks the
+captured inputs against `local-archive/capture-checksums.json`, and writes a
+separate `postprocess-cp-padding-v1` directory with the capture and validator
+commits, four CPU replays, report and SHA-256 manifest. It checks the supervised
+service before and after and never pauses it. Report the capture failure and
+postprocess result together; the postprocess is not a new online capture.

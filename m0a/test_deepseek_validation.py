@@ -62,7 +62,8 @@ def traces(root,pairs):
                              'compression_ratio':4,'compressed_block_size':128,'selected_width':512,
                              'raw_selected_ids':ids,'logical_compressed_block_ids':[u//128 if u>=0 else -1 for u in ids],
                              'timestamp_ns':1,'cp_world_size':8,'cp_local_start':rank*8,'cp_local_end':rank*8+8,
-                             'chunk_start_position':chunk,'chunk_token_count':64,'query_global_index':index}
+                             'chunk_start_position':chunk,'chunk_token_count':64,
+                             'chunk_context_len':chunk+64,'query_global_index':index}
                         outputs[rank].write(json.dumps(row)+'\n')
     for output in outputs.values(): output.close()
     return responses
@@ -153,9 +154,19 @@ class DeepSeekTests(unittest.TestCase):
 
     def test_bad_cp_owner_and_chunk_rejected(self):
         row=next(iter(self.rows[self.sidecar['events'][0]['event_id']].values()))
-        for field,value in [('rank',6),('chunk_token_count',0),('query_global_index',-1),('cp_local_end',999)]:
+        for field,value in [('rank',6),('chunk_token_count',0),('query_global_index',-1),
+                            ('cp_local_end',999),('chunk_context_len',0)]:
             changed=dict(row,**{field:value})
             with self.assertRaises(ValueError): validate_cp(changed)
+
+    def test_cp_chunk_accepts_only_exact_eight_rank_padding(self):
+        row={'rank':7,'cp_world_size':8,'cp_local_start':7147,'cp_local_end':8168,
+             'chunk_start_position':0,'chunk_token_count':8168,'chunk_context_len':8165,
+             'request_context_len':8165,'query_global_index':8129,'prompt_position':8129}
+        validate_cp(row)
+        for change in ({'chunk_context_len':8160}, {'chunk_token_count':8176},
+                       {'prompt_position':8165}, {'request_context_len':8164}):
+            with self.assertRaises(ValueError): validate_cp(dict(row,**change))
 
     def test_missing_cp_row_and_assignment_rejected(self):
         with tempfile.TemporaryDirectory() as name:

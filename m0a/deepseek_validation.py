@@ -167,7 +167,8 @@ def layer_number(name):
 
 
 def validate_cp(row):
-    fields = ('cp_world_size', 'cp_local_start', 'cp_local_end', 'chunk_start_position', 'chunk_token_count', 'query_global_index')
+    fields = ('cp_world_size', 'cp_local_start', 'cp_local_end', 'chunk_start_position',
+              'chunk_token_count', 'chunk_context_len', 'query_global_index')
     require(all(type(row.get(k)) is int for k in fields), 'Missing exact CP/chunk metadata')
     count = row['chunk_token_count']
     width = (count+7)//8
@@ -177,7 +178,14 @@ def validate_cp(row):
     index = row['query_global_index']
     require(row['cp_local_start'] <= index < min(count, row['cp_local_end']) and
             row['prompt_position'] == row['chunk_start_position']+index, 'Wrong CP query owner/position')
-    require(row['chunk_start_position'] >= 0 and row['chunk_start_position']+count <= row['request_context_len'],
+    # DSA CP pads each chunk to a multiple of its eight ranks. The actual
+    # context ends at chunk_context_len; the last 1-7 padded positions have no
+    # query rows. Compare the padded end to that exact per-chunk length.
+    context = row['chunk_context_len']
+    require(row['chunk_start_position'] >= 0 and
+            row['chunk_start_position'] < context <= row['request_context_len'] and
+            row['chunk_start_position']+count == ((context+7)//8)*8 and
+            row['prompt_position'] < context,
             'Invalid CP chunk range')
 
 
