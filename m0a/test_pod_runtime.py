@@ -19,6 +19,13 @@ RUN_ID = 'deepseek_20261003T000000Z_1234abcd'
 
 
 class PodRuntimeTests(unittest.TestCase):
+    def test_saved_native_hook_has_cp_and_full_prompt_metadata(self):
+        hook = (Path(__file__).parent / 'source/m0a_selected_trace.py').read_text()
+        for field in ('cp_world_size', 'cp_local_start', 'cp_local_end',
+                      'chunk_start_position', 'chunk_token_count', 'query_global_index',
+                      'trace_prompt_lens_cpu'):
+            self.assertIn(field, hook)
+
     def test_original_command_and_supervisor_config(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

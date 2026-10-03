@@ -97,6 +97,16 @@ class PodWorker(Worker):
         subprocess.run(patch_args, check=True, timeout=30)
         dsa = copied / 'attention/context_parallel/dsa_cp.py'
         runner = copied / 'worker/model_runner_v1.py'
+        hook = copied / 'attention/context_parallel/m0a_selected_trace.py'
+        # The preserved patch introduces the hook, while the later saved
+        # source adds exact CP/chunk and full-prompt metadata required by the
+        # current native trace contract. Keep this overlay explicit and hashed.
+        saved_hook = self.code_root / 'm0a/source/m0a_selected_trace.py'
+        shutil.copy2(saved_hook, hook)
+        require(all(field in hook.read_text() for field in
+                    ('cp_world_size', 'cp_local_start', 'cp_local_end', 'chunk_start_position',
+                     'chunk_token_count', 'query_global_index', 'trace_prompt_lens_cpu')),
+                'Saved hook lacks exact CP/chunk metadata')
         text = dsa.read_text()
         needle = 'req_metadata.trace_request_ids = kwargs.get("m0a_request_ids", ())'
         require(text.count(needle) == 1, 'Trace request metadata injection changed')
@@ -107,7 +117,7 @@ class PodWorker(Worker):
         runner.write_text(text.replace(needle,
             'm0a_prompt_lens=(self.input_batch.num_prompt_tokens_cpu_tensor[:num_reqs].tolist()\n'
             '                        if not for_cudagraph_capture else ()),\n                    ' + needle))
-        for path in (dsa, runner, copied / 'attention/context_parallel/m0a_selected_trace.py'):
+        for path in (dsa, runner, hook):
             compile(path.read_text(), str(path), 'exec')
         env = dict(os.environ, PYTHONPATH=str(target) + os.pathsep + os.environ.get('PYTHONPATH', ''))
         imported = subprocess.check_output([sys.executable, '-c',
@@ -117,7 +127,7 @@ class PodWorker(Worker):
         files = [copied / 'attention/context_parallel/dsa_cp.py', copied / 'envs.py',
                  copied / 'worker/model_runner_v1.py', copied / 'attention/context_parallel/m0a_selected_trace.py']
         return {'source_package': str(package), 'trace_package': str(copied),
-                'patch_sha256': sha256(patch), 'imported': imported,
+                'patch_sha256': sha256(patch), 'hook_overlay_sha256': sha256(saved_hook), 'imported': imported,
                 'patched_files': {str(p.relative_to(target)): sha256(p) for p in files}}
 
     def preflight(self):
