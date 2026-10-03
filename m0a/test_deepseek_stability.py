@@ -160,6 +160,32 @@ class StabilityTests(unittest.TestCase):
             self.assertEqual(report['output_difference_counts']['trace_on'],1)
             self.assertEqual(report['selected_set_consistency']['paired_effect_interpretation'],'exploratory')
 
+    def test_trace_replay_collects_48_requests_in_each_phase(self):
+        with tempfile.TemporaryDirectory() as root:
+            worker=self.worker(Path(root))
+            pairs=[]
+            for index in range(12):
+                item=pair()
+                item['pair_id']=f'pair-{index}'
+                pairs.append(item)
+            calls=0
+            def respond(_payload):
+                nonlocal calls
+                calls+=1
+                result=api(7 if calls==53 else 3)
+                result['id']=f'chatcmpl-{calls}'
+                return result
+            with patch('deepseek_validation.request',side_effect=respond):
+                baseline=worker.requests('trace_off',{'pairs':pairs},load_profile('deepseek_v4'),
+                                         soft_output_differences=True)
+                traced=worker.requests('trace_on',{'pairs':pairs},load_profile('deepseek_v4'),baseline,
+                                       soft_output_differences=True)
+            self.assertEqual((len(baseline),len(traced)),(48,48))
+            self.assertEqual(calls,96)
+            self.assertEqual(len((worker.directory/'trace_on-api.jsonl').read_text().splitlines()),48)
+            self.assertTrue(json.loads((worker.directory/'trace_on-output-differences.json').read_text()))
+            self.assertFalse(json.loads((worker.directory/'trace_on-failures.json').read_text()))
+
     def test_logprobs_probe_is_separate_from_repeat_gate(self):
         with tempfile.TemporaryDirectory() as root:
             worker = self.worker(Path(root))
