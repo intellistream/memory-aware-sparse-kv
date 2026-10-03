@@ -200,6 +200,39 @@ def final_inventory(host, directory):
     return json.loads(remote(host, code, timeout=180))
 
 
+def qualified_final_status(directory, current):
+    """Accept trace replay only with the complete restored and hashed evidence set."""
+    if current['status']=='passed':
+        return True
+    if current['status']!='engineering_validated':
+        return False
+    directory=Path(directory)
+    report=json.loads((directory/'report.json').read_text())
+    restoration=json.loads((directory/'restoration.json').read_text())
+    verification=json.loads((directory/'final-local-verification.json').read_text())
+    provenance=json.loads((directory/'local-archive/final-code-provenance.json').read_text())
+    records=json.loads((directory/'final-checksums.json').read_text())['files']
+    paths={record['path'] for record in records}
+    required={'report.json','restoration.json','trace-validation.json','sidecar.json',
+              'implementation.bundle','code-provenance.json',
+              'local-archive/final-artifacts.bundle','local-archive/final-code-provenance.json'}
+    required.update(f'replay-{scope}-{capacity}mib/report.json'
+                    for scope in ('per_rank','aggregate') for capacity in (64,128))
+    require(required <= paths, 'Missing final trace-replay evidence')
+    require(report['status']=='engineering_validated' and report['validation_mode']=='trace-replay' and
+            report['strict_output_acceptance']=='not_qualified' and not report['missing_artifacts'],
+            'Engineering report does not qualify')
+    require(report['completed_requests_per_phase']=={'trace_off':48,'trace_on':48} and
+            report['restoration'].get('restored') is True, 'Incomplete requests or restoration')
+    require(restoration.get('restored') is True and restoration.get('healthy') is True and
+            restoration.get('config_unchanged') is True and restoration.get('eight_npu_healthy') is True and
+            current.get('original_service_restored') is True, 'Original service restoration not verified')
+    require(verification['run_id']==directory.name and verification['git_commit']==provenance['git_commit'] and
+            sha256_file(directory/'local-archive/final-artifacts.bundle')==provenance['bundle_sha256'],
+            'Final archive provenance mismatch')
+    return True
+
+
 def guardian(host, remote_directory, directory):
     directory = Path(directory)
     state = {'pid': os.getpid(), 'run_id': directory.name, 'status': 'running', 'started_at': utc()}
@@ -268,8 +301,9 @@ def guardian(host, remote_directory, directory):
                 write_json(directory / 'final-checksums.json', {'files': records})
                 write_json(directory / 'final-local-verification.json', {'run_id': directory.name, 'at': utc(),
                            'verified_files': len(records), 'git_commit': final_commit})
+                qualified=qualified_final_status(directory,current)
                 update(status=current['status'], finished_at=utc(), final_verified_files=len(records), final_git_commit=final_commit)
-                return 0 if current['status'] == 'passed' else 1
+                return 0 if qualified else 1
             time.sleep(15)
         raise TimeoutError('Local guardian total deadline exceeded')
     except BaseException as error:

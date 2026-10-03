@@ -102,7 +102,8 @@ def launch(args):
           'local_directory':str(directory),'image':IMAGE,'image_id':IMAGE_ID,'requests_per_phase':48,'repetitions':2,
           'window_tokens':32,'capacity_mib':[64,128],'budget_scopes':['per_rank','aggregate'],'prefetch_budget_mib':8,
           'total_timeout_seconds':TOTAL_SECONDS,'stage_sync_required':True,'restore_original_service':True,
-          'container_name':'memecho-'+run_id,'executed':args.execute}
+          'container_name':'memecho-'+run_id,'executed':args.execute,
+          'validation_mode':args.validation_mode,'execution_available':False}
     plan.update(diagnostic_only=getattr(args,'diagnostic_only',False),diagnostic_requests_per_candidate=20,
                 repair=getattr(args,'repair',False),operator_replays=20,deterministic_rank_verification=bool(getattr(args,'repair',False)),
                 candidate_order=['original_fresh','eager','eager_single_stream','eager_single_stream_no_mtp',
@@ -110,9 +111,14 @@ def launch(args):
                 trace_off_and_on_share_selected_configuration=True,production_configuration_changed=False)
     if plan['repair']:
         plan['candidate_order'] += ['eager_single_stream_no_mtp_sync_seq1_hccl','eager_single_stream_no_mtp_sync_seq1_hccl_npu']
+    if args.validation_mode=='trace-replay':
+        plan.update(candidate_order=['original_fresh'],diagnostic_requests_per_candidate=0,
+                    strict_output_acceptance='not_qualified')
     if not args.execute:
         print(json.dumps(plan,ensure_ascii=False,indent=2))
         return 0
+    raise RuntimeError('Live execution is disabled: the launcher requires the old Docker socket and /workspace layout. '
+                       'A verified Kubernetes Pod adapter is required before --execute can run safely.')
     recovery = previous_run_barrier(args)
     directory.mkdir(parents=True,exist_ok=False)
     write_json(directory/'prior-run-recovery.json',recovery)
@@ -163,14 +169,17 @@ def launch(args):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute',action='store_true')
+    parser.add_argument('--validation-mode',choices=('strict','trace-replay'),default='strict')
     parser.add_argument('--diagnostic-only',action='store_true',help='Stop after stability diagnostics and restore the original service')
     parser.add_argument('--repair',action='store_true',help='Test deterministic candidates, then diagnose and replay operators if stability fails')
     parser.add_argument('--host',default='hust')
-    parser.add_argument('--remote-root',default='/workspace/memecho')
+    parser.add_argument('--remote-root',default='/root/memory-aware-sparse-kv')
     parser.add_argument('--guardian',action='store_true',help=argparse.SUPPRESS)
     parser.add_argument('--remote-directory',help=argparse.SUPPRESS)
     parser.add_argument('--local-directory',type=Path,help=argparse.SUPPRESS)
     args=parser.parse_args()
+    if args.validation_mode=='trace-replay' and (args.repair or args.diagnostic_only):
+        parser.error('--validation-mode trace-replay cannot be combined with --repair or --diagnostic-only')
     if args.guardian:
         require(args.remote_directory and args.local_directory,'Guardian paths required')
         return guardian(args.host,args.remote_directory,args.local_directory)

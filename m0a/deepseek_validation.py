@@ -181,7 +181,7 @@ def validate_cp(row):
             'Invalid CP chunk range')
 
 
-def validate_native_trace(raw_dir, output_dir, responses, ranges, profile):
+def validate_native_trace(raw_dir, output_dir, responses, ranges, profile, *, allow_selected_drift=False):
     lookup = {r['request_id']: r for r in responses}
     require(len(lookup) == 48, 'Expected 48 unique trace-on requests')
     files = sorted(Path(raw_dir).glob('rank*.jsonl'))
@@ -190,6 +190,7 @@ def validate_native_trace(raw_dir, output_dir, responses, ranges, profile):
     output_dir.mkdir()
     coverage, repeat, warm, assignments = defaultdict(dict), {}, {}, defaultdict(dict)
     seen, count, kept, layers = set(), 0, 0, {}
+    repeat_drift, prefix_drift, drift_examples = 0, 0, []
     for path in files:
         with (output_dir/path.name).open('w') as out:
             for row in load_jsonl(path):
@@ -218,11 +219,19 @@ def validate_native_trace(raw_dir, output_dir, responses, ranges, profile):
                 mapping[row['layer']] = row['rank']
                 if pos == start-1:
                     group = (response['pair_id'], response['repetition'], number)
-                    require(group not in warm or warm[group] == row['raw_selected_ids'], 'Paired prefix selected IDs differ')
-                    warm[group] = row['raw_selected_ids']
+                    if group in warm and warm[group] != row['raw_selected_ids']:
+                        prefix_drift += 1
+                        if len(drift_examples) < 20:
+                            drift_examples.append({'kind':'pair_prefix','request_id':req,'layer':row['layer'],'position':pos})
+                        require(allow_selected_drift, 'Paired prefix selected IDs differ')
+                    warm.setdefault(group, row['raw_selected_ids'])
                 group = (response['pair_id'], response['variant'], number, pos)
-                require(group not in repeat or repeat[group] == row['raw_selected_ids'], 'Repeated selected IDs differ')
-                repeat[group] = row['raw_selected_ids']
+                if group in repeat and repeat[group] != row['raw_selected_ids']:
+                    repeat_drift += 1
+                    if len(drift_examples) < 20:
+                        drift_examples.append({'kind':'repeat','request_id':req,'layer':row['layer'],'position':pos})
+                    require(allow_selected_drift, 'Repeated selected IDs differ')
+                repeat.setdefault(group, row['raw_selected_ids'])
                 out.write(json.dumps(row, separators=(',', ':'))+'\n')
                 kept += 1
     for response in responses:
@@ -233,7 +242,11 @@ def validate_native_trace(raw_dir, output_dir, responses, ranges, profile):
     return {'raw_rows': count, 'window_rows': kept, 'requests': 48, 'positions_per_request': 33,
             'layers': 21, 'ranks_with_rows': sorted({v for m in coverage.values() for v in m.values()}),
             'query_assignment': dict(assignments), 'layer_names': [layers[i] for i in range(2, 43, 2)],
-            'causal_scope_checked': True, 'repeat_selected_ids_identical': True, 'pair_prefix_selected_ids_identical': True}
+            'causal_scope_checked': True, 'repeat_selected_ids_identical': repeat_drift == 0,
+            'pair_prefix_selected_ids_identical': prefix_drift == 0,
+            'repeat_selected_id_differences': repeat_drift, 'pair_prefix_selected_id_differences': prefix_drift,
+            'selected_id_drift_examples': drift_examples,
+            'paired_effect_interpretation': 'exploratory' if repeat_drift or prefix_drift else 'qualified_for_offline_comparison'}
 
 
 def source_evidence(path, needles, directory):
@@ -341,9 +354,12 @@ class Worker(BaseWorker):
         launch = json.loads(launch_path.read_text()) if launch_path.exists() else {}
         self.diagnostic_only = launch.get('diagnostic_only',False)
         self.repair = launch.get('repair',False)
+        self.validation_mode = launch.get('validation_mode','strict')
+        require(self.validation_mode in ('strict','trace-replay'), 'Unknown validation mode')
         self.selected_config = None
         self.diagnostics = []
         self.failures = []
+        self.output_differences = []
         self.operator_repairs = []
         self.state = {'schema_version': 1, 'run_id': run_id, 'devices': list(range(8)), 'worker_pid': os.getpid(),
                       'started_at': utc(), 'status': 'running', 'stage': 'bootstrap', 'error': None}
@@ -629,9 +645,10 @@ class Worker(BaseWorker):
             from m0a.deepseek_repair import validate_deterministic_ranks
             write_json(path/'deterministic-ranks.json',validate_deterministic_ranks(path/'rank-settings',candidate))
 
-    def request_sequence(self,stage,sequence,profile,*,directory=None,baseline=None,collect=False,logprobs=False):
+    def request_sequence(self,stage,sequence,profile,*,directory=None,baseline=None,collect=False,logprobs=False,
+                         soft_output_differences=False):
         directory = directory or self.directory
-        records, stable, failures = [], {}, []
+        records, stable, failures, differences = [], {}, [], []
         expected = {(r['pair_id'],r['variant'],r['repetition']):r['signature'] for r in baseline or []}
         config = self.selected_config or self.state.get('candidate')
         self.update(stage=stage,completed_requests=0)
@@ -654,7 +671,11 @@ class Worker(BaseWorker):
                     comparisons = [] if logprobs else [('repeat',stable.get(key)),('trace_on_off',expected.get(key+(repetition,)))]
                     for kind,reference in comparisons:
                         if reference is not None and reference != sig:
-                            failures.append(dict(identity,kind=kind,**output_difference(reference,sig)))
+                            difference = dict(identity,kind=kind,request=payload,response=result,
+                                              **output_difference(reference,sig))
+                            differences.append(difference)
+                            if not soft_output_differences:
+                                failures.append(difference)
                     stable.setdefault(key,sig)  # Always compare with the cold first response.
                     row = {k:pair[k] for k in ('pair_id','workload_id','episode_id','context_target','event_type','source_trace_id') if k in pair}
                     row.update(identity,schema_version=1,run_id=self.run_id,boundary_position=item['boundary_position'],
@@ -684,16 +705,21 @@ class Worker(BaseWorker):
                 self.update(completed_requests=len(records))
                 if failures and not collect:
                     write_json(directory/(stage+'-failures.json'),failures)
+                    write_json(directory/(stage+'-output-differences.json'),differences)
                     self.failures += failures
+                    self.output_differences += differences
                     raise ValueError(f'{stage} rejected: {failures[-1]["kind"]}, pair={pair["pair_id"]}, variant={variant}, repetition={repetition}')
         write_json(directory/(stage+'-failures.json'),failures)
+        write_json(directory/(stage+'-output-differences.json'),differences)
         self.failures += failures
+        self.output_differences += differences
         return records, failures
 
-    def requests(self,stage,pairs,profile,baseline=None):
+    def requests(self,stage,pairs,profile,baseline=None,*,soft_output_differences=False):
         sequence = [(p,v,r) for p in pairs['pairs'] for r in range(2)
                     for v in (('event','control') if r==0 else ('control','event'))]
-        records,_ = self.request_sequence(stage,sequence,profile,baseline=baseline)
+        records,_ = self.request_sequence(stage,sequence,profile,baseline=baseline,
+                                          soft_output_differences=soft_output_differences)
         require(len(records)==48,'Incomplete request phase')
         return records
 
@@ -822,6 +848,68 @@ class Worker(BaseWorker):
             from m0a.deepseek_repair import validate_deterministic_ranks
             write_json(self.directory/'trace-deterministic-ranks.json',validate_deterministic_ranks(trace/'rank-settings',self.selected_config))
 
+    def trace_replay_baseline(self,pairs,profile):
+        """Capture the unmodified deployment command without a stability gate."""
+        candidate={'id':'original_fresh','command':list(self.original['Config']['Cmd']),'changes':[]}
+        self.selected_config=candidate
+        write_json(self.directory/'selected-config.json',dict(candidate,image_id=IMAGE_ID,
+                   original_command=self.original['Config']['Cmd'],validation_mode=self.validation_mode,
+                   diagnostic_requests=0,baseline_requests=48))
+        path=self.directory/'trace-off-service'
+        path.mkdir()
+        try:
+            self.start_candidate(candidate,path)
+            return self.requests('trace_off',pairs,profile,soft_output_differences=True)
+        finally:
+            try:
+                self.command(['docker','logs',self.container],output=path/'service.log',timeout=60)
+            finally:
+                self.cleanup()
+                self.wait_release()
+
+    def validate_engineering_evidence(self):
+        """Check completed local evidence before reporting engineering success."""
+        required=['pairs.json','selected-config.json','trace_off-api.jsonl','trace_on-api.jsonl',
+                  'trace_off-responses.jsonl','trace_on-responses.jsonl','trace_off-failures.json',
+                  'trace_on-failures.json','trace_off-output-differences.json',
+                  'trace_on-output-differences.json','compressor-contract.json',
+                  'trace-validation.json','sidecar.json','restoration.json']
+        for scope in ('per_rank','aggregate'):
+            for capacity in (64,128):
+                label=f'{scope}-{capacity}mib'
+                required += [f'cache-{label}.json',f'replay-{label}/report.json',f'replay-{label}/events.jsonl']
+        require(all((self.directory/name).is_file() for name in required), 'Missing engineering evidence')
+        require(json.loads((self.directory/'restoration.json').read_text()).get('restored') is True,
+                'Original service has not been restored')
+        require(json.loads((self.directory/'compressor-contract.json').read_text()).get('passed') is True,
+                'Compressor contract failed')
+        for phase in ('trace_off','trace_on'):
+            require(len((self.directory/(phase+'-responses.jsonl')).read_text().splitlines())==48,
+                    f'Incomplete {phase} responses')
+            require(len((self.directory/(phase+'-api.jsonl')).read_text().splitlines())==48,
+                    f'Incomplete {phase} API evidence')
+            require(not json.loads((self.directory/(phase+'-failures.json')).read_text()),
+                    f'{phase} has hard request failures')
+        trace=json.loads((self.directory/'trace-validation.json').read_text())
+        require(trace['requests']==48 and trace['window_rows']==48*33*21 and trace['causal_scope_checked'],
+                'Native trace coverage or causal contract failed')
+        sidecar=json.loads((self.directory/'sidecar.json').read_text())
+        require(sidecar['selection_provenance']=='real_npu_native' and len(sidecar['events'])==48,
+                'Sidecar provenance or event count failed')
+        for scope in ('per_rank','aggregate'):
+            for capacity in (64,128):
+                label=f'{scope}-{capacity}mib'
+                path=self.directory/f'replay-{label}'
+                replay=json.loads((path/'report.json').read_text())
+                require(replay['config']['budget_scope']==scope and replay['config']['capacity_bytes']==capacity*1024**2,
+                        'Replay configuration mismatch')
+                require(replay['training_events']==24 and replay['evaluation_events']==24 and
+                        len((path/'events.jsonl').read_text().splitlines())==48*14,
+                        'Incomplete replay result')
+                require(all(sha256_file(Path(name))==digest for name,digest in replay['input_sha256'].items()),
+                        'Replay input hash mismatch')
+        return True
+
     def report(self,status,error=None):
         expected = ['pairs.json','trace_off-responses.jsonl','trace_on-responses.jsonl','compressor-contract.json',
                     'trace-validation.json','sidecar.json','restoration.json']
@@ -829,7 +917,21 @@ class Worker(BaseWorker):
         if self.diagnostic_only:
             expected = ['pairs.json','diagnostics.json','selected-config.json','restoration.json','compressor-contract.json']
         restoration = json.loads((self.directory/'restoration.json').read_text()) if (self.directory/'restoration.json').exists() else {'restored':False}
+        trace_path=self.directory/'trace-validation.json'
+        trace=json.loads(trace_path.read_text()) if trace_path.exists() else {}
+        differences={phase:json.loads((self.directory/(phase+'-output-differences.json')).read_text())
+                     if (self.directory/(phase+'-output-differences.json')).exists() else []
+                     for phase in ('trace_off','trace_on')}
         data={'run_id':self.run_id,'status':status,'error':error,'completed_stages':self.completed,
+              'validation_mode':self.validation_mode,
+              'strict_output_acceptance':'not_qualified' if self.validation_mode=='trace-replay' else
+                  ('passed' if status=='passed' and not self.diagnostic_only else 'not_qualified'),
+              'output_difference_counts':{phase:len(rows) for phase,rows in differences.items()},
+              'output_differences':differences,
+              'selected_set_consistency':{key:trace.get(key) for key in
+                  ('repeat_selected_ids_identical','pair_prefix_selected_ids_identical',
+                   'repeat_selected_id_differences','pair_prefix_selected_id_differences',
+                   'paired_effect_interpretation')},
               'missing_artifacts':[p for p in expected if not (self.directory/p).exists()], 'restoration':restoration,
               'evidence_level':'synthetic eight-NPU DeepSeek engineering validation',
               'selection_provenance':'real_npu_native' if 'native_trace_and_sidecar' in self.completed else 'not_validated',
@@ -877,8 +979,11 @@ class Worker(BaseWorker):
             self.pause_original()
             self.contract()
             self.completed.append('npu_compressor_contract')
-            baseline=self.choose_configuration(pairs,profile)
-            self.completed.append('stability_diagnostics')
+            if self.validation_mode=='trace-replay':
+                baseline=self.trace_replay_baseline(pairs,profile)
+            else:
+                baseline=self.choose_configuration(pairs,profile)
+                self.completed.append('stability_diagnostics')
             if self.diagnostic_only:
                 self.restore()
                 self.completed.append('restore_original')
@@ -888,11 +993,13 @@ class Worker(BaseWorker):
             self.checkpoint('trace_off',[self.directory/n for n in ('trace_off-responses.jsonl','trace_off-api.jsonl','selected-config.json')])
             self.completed.append('trace_off')
             self.start_trace(ranges)
-            responses=self.requests('trace_on',pairs,profile,baseline)
+            responses=self.requests('trace_on',pairs,profile,baseline,
+                                    soft_output_differences=self.validation_mode=='trace-replay')
             self.command(['docker','logs',self.container],output=self.directory/'trace_on-service.log',timeout=60)
             self.restore()  # Restore before validation, synchronization or CPU work.
             self.completed += ['trace_on','restore_original']
-            evidence=validate_native_trace(self.directory/'raw-traces',self.directory/'traces',responses,ranges,profile)
+            evidence=validate_native_trace(self.directory/'raw-traces',self.directory/'traces',responses,ranges,profile,
+                                           allow_selected_drift=self.validation_mode=='trace-replay')
             write_json(self.directory/'trace-validation.json',evidence)
             support_evidence=next(e for e in layout['source_evidence'] if e['path'].endswith('compressor_kernel.h'))
             sidecar=export_sidecar(responses,pairs,profile,evidence,support_evidence)
@@ -916,9 +1023,19 @@ class Worker(BaseWorker):
                     self.command(['python3',str(self.code_root/'m0a/transition_replay.py'),'--trace-dir',str(self.directory/'traces'),
                                   '--sidecar',str(self.directory/'sidecar.json'),'--config',str(path),'--source-root',str(self.directory),
                                   '--output-dir',str(output)],timeout=TOTAL_SECONDS,output=self.directory/('replay-'+label+'.log'))
+                    replay_report_path=output/'report.json'
+                    replay_report=json.loads(replay_report_path.read_text())
+                    replay_report['paired_effect_interpretation']=evidence['paired_effect_interpretation']
+                    if evidence['paired_effect_interpretation']=='exploratory':
+                        replay_report['limitations'].append('Selected sets drift across repeats or paired prefixes; paired effects are exploratory.')
+                    write_json(replay_report_path,replay_report)
                     self.checkpoint('replay_'+label,[path,output/'events.jsonl',output/'report.json',self.directory/('replay-'+label+'.log')])
                     self.completed.append('replay_'+label)
-            self.report('passed')
+            if self.validation_mode=='trace-replay':
+                self.validate_engineering_evidence()
+                self.report('engineering_validated')
+            else:
+                self.report('passed')
             self.checkpoint('report',[self.directory/'report.json',self.directory/'report.md'])
         except DiagnosticComplete:
             pass
@@ -945,7 +1062,8 @@ class Worker(BaseWorker):
                 signal.alarm(0)
             if error:
                 self.report('failed',error)
-            self.update(status='failed' if error else 'passed',stage='finished',error=error,completed_stages=self.completed,finished_at=utc())
+            self.update(status='failed' if error else ('engineering_validated' if self.validation_mode=='trace-replay' else 'passed'),
+                        stage='finished',error=error,completed_stages=self.completed,finished_at=utc())
             self.stop.set()
             thread.join(timeout=1)
         return 1 if error else 0
