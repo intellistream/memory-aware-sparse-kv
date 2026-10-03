@@ -201,7 +201,7 @@ print(json.dumps(evidence))
     write_json(directory/'service-bootstrap.json',bootstrap_result)
     start='''import json,os,pathlib,subprocess,sys
 p=pathlib.Path(DIRECTORY)
-env=dict(os.environ,PYTHONPATH=str(p/'implementation'))
+env=dict(os.environ,PYTHONPATH=str(p/'implementation')+os.pathsep+os.environ.get('PYTHONPATH',''))
 with (p/'worker.log').open('ab') as log:
  child=subprocess.Popen([sys.executable,'-u','-m','m0a.deepseek_pod_validation',
                          '--root',ROOT,'--run-id',p.name],env=env,

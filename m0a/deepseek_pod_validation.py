@@ -157,7 +157,7 @@ class PodWorker(Worker):
         with (self.directory / 'watchdog.log').open('ab') as output:
             child = subprocess.Popen([sys.executable, '-m', 'm0a.deepseek_pod_validation', '--watchdog',
                                       '--root', str(self.root), '--run-id', self.run_id],
-                                     env=dict(os.environ, PYTHONPATH=str(self.code_root)),
+                                     env=dict(os.environ, PYTHONPATH=str(self.code_root) + os.pathsep + os.environ.get('PYTHONPATH', '')),
                                      stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                      start_new_session=True, close_fds=True)
         write_json(self.directory / 'watchdog.json', {'pid': child.pid, 'identity': process_identity(child.pid)})
