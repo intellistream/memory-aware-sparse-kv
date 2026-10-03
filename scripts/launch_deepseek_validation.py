@@ -104,10 +104,12 @@ def launch(args):
     remote_directory=str(PurePosixPath(args.remote_root)/'m0a/runs'/run_id)
     directory=ROOT/'m0a/runs'/run_id
     plan={'run_id':run_id,'devices':list(range(8)),'host':args.host,'remote_directory':remote_directory,
-          'local_directory':str(directory),'image':IMAGE,'image_id':IMAGE_ID,'requests_per_phase':48,'repetitions':2,
+          'local_directory':str(directory),'image':IMAGE if args.runtime=='docker' else None,
+          'image_id':IMAGE_ID if args.runtime=='docker' else None,'requests_per_phase':48,'repetitions':2,
           'window_tokens':32,'capacity_mib':[64,128],'budget_scopes':['per_rank','aggregate'],'prefetch_budget_mib':8,
           'total_timeout_seconds':TOTAL_SECONDS,'stage_sync_required':True,'restore_original_service':True,
-          'container_name':'memecho-'+run_id,'executed':args.execute,
+          'container_name':'memecho-'+run_id if args.runtime=='docker' else None,
+          'supervisor_service':'memecho-deepseek' if args.runtime=='pod' else None,'executed':args.execute,
           'validation_mode':args.validation_mode,'runtime':args.runtime,'model_dir':str(args.model_dir) if args.model_dir else None,
           'execution_available':args.runtime=='pod' and args.validation_mode=='trace-replay'}
     plan.update(diagnostic_only=getattr(args,'diagnostic_only',False),diagnostic_requests_per_candidate=20,
