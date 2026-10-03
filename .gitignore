@@ -6,4 +6,13 @@ paper/*.out
 paper/*.pdf
 __pycache__/
 .venv/
-
+m0a/runs/
+m0a/artifacts/
+*.tar
+*.tar.gz
+*.bundle
+*.safetensors
+*.safetensors.index.json
+*.bin
+*.pt
+*.pth
