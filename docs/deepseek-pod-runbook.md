@@ -66,3 +66,12 @@ separate `postprocess-cp-padding-v1` directory with the capture and validator
 commits, four CPU replays, report and SHA-256 manifest. It checks the supervised
 service before and after and never pauses it. Report the capture failure and
 postprocess result together; the postprocess is not a new online capture.
+
+To finish an already running CPU continuation without an interactive session,
+start `scripts/finalize_deepseek_pod.py` detached on the local PR checkout with
+`--run-id`, `--host`, `--remote-root`, and `--deployment` (the independent Pod
+checkout path). It watches the remote manifest, downloads and checks every
+postprocess file, verifies the supervised service, writes
+`docs/deepseek-pod-validation-result.md`, and pushes the result commit to the
+draft PR branch. Read `automation-status.json` and `automation.log` in the
+local run directory for completion or errors.
