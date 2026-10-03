@@ -85,7 +85,11 @@ class PodRuntimeTests(unittest.TestCase):
             for child in (owned, unrelated):
                 if child.poll() is None:
                     child.terminate()
-                child.wait(timeout=5)
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=5)
 
     def test_recovery_restarts_only_the_supervised_service(self):
         with tempfile.TemporaryDirectory() as name:
