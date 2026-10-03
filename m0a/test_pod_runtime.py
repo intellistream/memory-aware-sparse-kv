@@ -123,6 +123,7 @@ class PodRuntimeTests(unittest.TestCase):
         args, kwargs = run.call_args
         self.assertLess(len(args[0][-1]), 200)
         self.assertIn('--dereference', args[0][-1])
+        self.assertIn('--hard-dereference', args[0][-1])
         self.assertIn(b'trace-python/file-11999.py\0', kwargs['input'])
         self.assertEqual(kwargs['input'].count(b'\0'), len(records))
 
