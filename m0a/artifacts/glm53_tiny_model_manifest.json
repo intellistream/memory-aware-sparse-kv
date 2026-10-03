@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "model_id": "inference-optimization/GLM-5.3-0.6B-A0.4B",
+  "revision": "20aae340d157bd2215b9d81165be87e94686dfdf",
+  "model_type": "glm_moe_dsa",
+  "architectures": [
+    "GlmMoeDsaForCausalLM"
+  ],
+  "files": {
+    "config.json": {
+      "size": 2365,
+      "sha256": "09d6d0b4b1131cfc79e280bd71a38f2700b433d868d34d02e92c5e56900d2cdd"
+    },
+    "tokenizer.json": {
+      "size": 20217719,
+      "sha256": "44556920e4507367e1615610a11aabf215ed123be7ec45ff217891b1b5a6a21a"
+    },
+    "model.safetensors": {
+      "size": 1243574976,
+      "sha256": "51bba6b768ddcdb97b7595d0b9a3c18cb82c4f8efa77e2f7924c4d1d46cb3aed"
+    }
+  }
+}

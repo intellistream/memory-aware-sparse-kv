@@ -1,0 +1,625 @@
+{
+  "schema_version": 1,
+  "scope": "One 1,029-token prompt plus 32-token completion; operator reference only, no selected-set or KV recall inference",
+  "rank_count": 8,
+  "rank_summary": [
+    {
+      "rank": 0,
+      "computing_us": 727133.9800000002,
+      "communication_us": 3632932.079999994,
+      "communication_not_overlapped_us": 3612606.3200000003,
+      "overlapped_us": 20325.759999993723,
+      "free_us": 22578280.099987507,
+      "stage_us": 26918020.5,
+      "preparing_us": 3529.75
+    },
+    {
+      "rank": 1,
+      "computing_us": 713365.0669999868,
+      "communication_us": 1759669.314000012,
+      "communication_not_overlapped_us": 1738275.4270000092,
+      "overlapped_us": 21393.887000002665,
+      "free_us": 24465687.277987584,
+      "stage_us": 26917327.75,
+      "preparing_us": 3480.5
+    },
+    {
+      "rank": 2,
+      "computing_us": 694843.4400000038,
+      "communication_us": 3048829.940000014,
+      "communication_not_overlapped_us": 3027396.839999997,
+      "overlapped_us": 21433.100000016857,
+      "free_us": 23195737.799987502,
+      "stage_us": 26917978.25,
+      "preparing_us": 3232.25
+    },
+    {
+      "rank": 3,
+      "computing_us": 678455.9399999933,
+      "communication_us": 1373214.8000000024,
+      "communication_not_overlapped_us": 1350545.4600000037,
+      "overlapped_us": 22669.339999998687,
+      "free_us": 24888395.599986825,
+      "stage_us": 26917397.0,
+      "preparing_us": 3932.5
+    },
+    {
+      "rank": 4,
+      "computing_us": 693620.5999999949,
+      "communication_us": 1504430.599999997,
+      "communication_not_overlapped_us": 1483459.8200000043,
+      "overlapped_us": 20970.77999999281,
+      "free_us": 24739804.69998765,
+      "stage_us": 26916885.0,
+      "preparing_us": 4304.25
+    },
+    {
+      "rank": 5,
+      "computing_us": 694729.5400000099,
+      "communication_us": 1175406.4599999946,
+      "communication_not_overlapped_us": 1154812.2399999963,
+      "overlapped_us": 20594.219999998342,
+      "free_us": 25062874.4999875,
+      "stage_us": 26912416.25,
+      "preparing_us": 9130.25
+    },
+    {
+      "rank": 6,
+      "computing_us": 705361.8599999966,
+      "communication_us": 292389.4200000007,
+      "communication_not_overlapped_us": 274691.7800000009,
+      "overlapped_us": 17697.63999999978,
+      "free_us": 25937915.8399881,
+      "stage_us": 26917969.5,
+      "preparing_us": 3434.75
+    },
+    {
+      "rank": 7,
+      "computing_us": 688254.6199999985,
+      "communication_us": 983232.1800000011,
+      "communication_not_overlapped_us": 961508.7000000007,
+      "overlapped_us": 21723.480000000447,
+      "free_us": 25267925.379987385,
+      "stage_us": 26917688.75,
+      "preparing_us": 3687.75
+    }
+  ],
+  "rank_imbalance": {
+    "computing_max_over_min": 1.071748270049795,
+    "communication_max_over_min": 12.424977894206929
+  },
+  "target_operators": [
+    {
+      "name": "aclnnVllmQuantLightningIndexerMetadata",
+      "operator_count": 152,
+      "device_self_time_us": 13517.849999999999,
+      "device_total_time_us": 13517.849999999999,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "aclnnVllmQuantLightningIndexer",
+      "operator_count": 168,
+      "device_self_time_us": 4542.109,
+      "device_total_time_us": 4542.109,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "_C_ascend::npu_vllm_quant_lightning_indexer_metadata",
+      "operator_count": 152,
+      "device_self_time_us": 0.0,
+      "device_total_time_us": 13517.849999999999,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "vllm::dsa_forward",
+      "operator_count": 496,
+      "device_self_time_us": 0.0,
+      "device_total_time_us": 13326152.561999999,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "_C_ascend::npu_vllm_quant_lightning_indexer",
+      "operator_count": 168,
+      "device_self_time_us": 0.0,
+      "device_total_time_us": 4542.109,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    }
+  ],
+  "top_op_types": [
+    {
+      "name": "QuantBatchMatmulV3",
+      "count": 36632,
+      "total_time_us": 750991.3290000001,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "GroupedMatmulSwigluQuant",
+      "count": 6688,
+      "total_time_us": 528953.863,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "Compressor",
+      "count": 9424,
+      "total_time_us": 503722.5530000001,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "HcPre",
+      "count": 13376,
+      "total_time_us": 487245.3900000001,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "TransposeBatchMatMul",
+      "count": 6688,
+      "total_time_us": 347504.687,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "Cumsum",
+      "count": 8056,
+      "total_time_us": 283557.26100000006,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "GroupedMatmul",
+      "count": 6688,
+      "total_time_us": 272511.75800000003,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "MatMulV2",
+      "count": 17232,
+      "total_time_us": 255131.333,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "ScatterNdUpdateV2",
+      "count": 19304,
+      "total_time_us": 249426.03600000002,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "Index",
+      "count": 21184,
+      "total_time_us": 204673.887,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "SparseAttnSharedkv",
+      "count": 6688,
+      "total_time_us": 158518.91900000002,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "DynamicQuant",
+      "count": 33136,
+      "total_time_us": 129743.96299999999,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "TensorMove",
+      "count": 840,
+      "total_time_us": 123383.381,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "_compute_slot_mapping_kernel",
+      "count": 912,
+      "total_time_us": 122165.174,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "IndexCheck",
+      "count": 21336,
+      "total_time_us": 114840.92,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "MoeInitRoutingCustom",
+      "count": 6688,
+      "total_time_us": 110010.341,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "InplacePartialRotaryMul",
+      "count": 23256,
+      "total_time_us": 106199.68100000001,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "MatMulV3",
+      "count": 6632,
+      "total_time_us": 100127.31700000001,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "RmsNorm",
+      "count": 20672,
+      "total_time_us": 98538.391,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "HcPost",
+      "count": 13376,
+      "total_time_us": 95384.32099999998,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "Cast",
+      "count": 44472,
+      "total_time_us": 67381.024,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "triton_rms_kernel",
+      "count": 6688,
+      "total_time_us": 64679.018000000004,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "SparseAttnSharedkvMetadata",
+      "count": 608,
+      "total_time_us": 55226.256,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "MoeTokenUnpermute",
+      "count": 6688,
+      "total_time_us": 55109.185999999994,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "DequantSwigluQuant",
+      "count": 6688,
+      "total_time_us": 53288.763999999996,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "VllmQuantLightningIndexer",
+      "count": 3192,
+      "total_time_us": 49080.24,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "MoeGatingTopKHash",
+      "count": 6688,
+      "total_time_us": 48576.365999999995,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "RmsNormDynamicQuant",
+      "count": 6688,
+      "total_time_us": 31925.199,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "CompressorMetadata",
+      "count": 9424,
+      "total_time_us": 30890.614,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "Add",
+      "count": 8344,
+      "total_time_us": 19003.099000000002,
+      "ranks": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    }
+  ]
+}

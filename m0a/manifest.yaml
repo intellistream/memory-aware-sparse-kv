@@ -1,0 +1,180 @@
+schema_version: 1
+recorded_at: '2026-09-26T21:37:55+08:00'
+status: 'DeepSeek pilot accepted; GLM single-NPU engineering prevalidation complete; formal paired experiment not run'
+
+base:
+  image: 'quay.io/ascend/vllm-ascend@sha256:b2d13e24b295171d8f63678506fad5542f142e81d57e407a0b8c98c16ba0c4f7'
+  image_id: 'sha256:cb25ae391cad9549f884b9ba57877e67b5a1da6f9200b870dde15b38df6696ba'
+  model_revision: 'a037dcf99003c6a46cb12b30d83ffb5519e5fa3f'
+  vllm_commit: '0fc695fc6d1d82e9a5ac6835ac8e4e1c83703665'
+  vllm_ascend_commit: '5cb98caaadeff42b5b62b996e34bb2aaa29d20fd'
+  branch: 'feature/m0-native-sparse-tracing'
+
+trace_image:
+  tag: 'memecho/m0a-trace:stage0-v3'
+  local_image_id: 'sha256:a41da3a931b86b1c24d5acb24503e15d75bfe6ae6480bf082de89abe08220b64'
+  repo_digests: []
+  built_on: 'hust'
+  note: 'Local content-addressed image ID; image has not been pushed to a registry.'
+  build_context: 'm0a/image/'
+  previous_failed_pilot_image:
+    tag: 'memecho/m0a-trace:stage0-v2'
+    image_id: 'sha256:d56d44f7e2a908a3724c11a329626baf83522b830829e3a27285f81c58a52c46'
+
+instrumentation:
+  source_path: 'source/vllm-ascend/vllm_ascend/attention/context_parallel/dsa_cp.py'
+  source_patch: 'm0a/vllm-ascend-trace.patch'
+  enabled_by: 'VLLM_ASCEND_M0A_TRACE_DIR; empty by default'
+  scope: 'native DSA context-parallel prefill; one active API request'
+  raw_index_unit: 'compressed KV token position, per request'
+  invalid_sentinel: -1
+  compression_ratio: 4
+  selected_width: 512
+  sparse_block_size: 1
+  compressed_cache_block_size: 128
+  expected_dsa_layers: 21
+  mapping: 'valid raw index // 128 -> logical compressed-KV block ID'
+  live_semantics_verified: true
+
+paired_inputs:
+  file: 'm0a/pairs.json'
+  sha256: 'db2b437eefcd6e70642932f07140dd7678ee7a66c752632fa21abdd7d883b766'
+  tokenizer_json_sha256: '8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf'
+  pair_count: 12
+  workload_id: 'synthetic_smoke'
+  evidence_class: 'instrumentation smoke only; not a representative real agent workload'
+  events: ['tool_call', 'tool_result', 'memory_write', 'memory_consolidation', 'memory_supersession', 'task_switch']
+  context_targets: [8192, 32768]
+  same_prefix: true
+  max_event_control_token_difference: 2
+  boundary_positions: [8130, 32700]
+  planned_repetitions_per_pair: 3
+
+offline_validation:
+  cpu_tests:
+    count: 18
+    outcome: 'pass locally and on hust'
+  synthetic_end_to_end:
+    responses: 72
+    trace_rows: 3024
+    pairs: 12
+    outcome: 'pass; synthetic data only'
+  baseline_summary:
+    file: 'm0a/baseline_offline_summary.json'
+    sha256: 'a41c7d27f2502982a03e5c8ec96c21c647175aaeb284502071b7c587ec64482c'
+    verified_runs: 16
+    completed: 320
+    failed: 0
+  baseline_svg:
+    file: 'm0a/baseline_overview.svg'
+    sha256: '83f5fddd0f13a7849e4e8b7d9d0782631cbac3eefec8cb6a99851d4350cbf1aa'
+  profile_summary:
+    file: 'm0a/profile_offline_summary.json'
+    sha256: '1311aca12c376db6c02728f5442c44b28936797da3ef28fb4acb76b26dbdd1e2'
+    source_run_id: 'baseline_torch_20260916T125428Z'
+    rank_count: 8
+
+pilot_attempts:
+  - attempted_at: '2026-09-20T09:39:26Z'
+    image: 'memecho/m0a-trace:stage0-v2'
+    outcome: 'worker initialization failed before model load or any trace request'
+    reason: 'about 41.7 GiB free on occupied devices; fixed 0.90 setting requires 54.86 GiB'
+    failure_log: 'm0a/pilot_startup_failed.log'
+    failure_log_sha256: 'f778e423c6b956e92073ca593adb9630907a2f6b1cb39a21acfcb5f3c4ca08e6'
+  - attempted_at: '2026-09-23T02:08:42Z'
+    image: 'memecho/m0a-trace:stage0-v2'
+    outcome: 'worker initialization failed before model load or any trace request'
+    reason: '26.9/60.96 GiB free at worker startup; fixed 0.90 setting requires 54.86 GiB'
+    failure_log: 'm0a/pilot_startup_failed_20260923.log'
+    failure_log_sha256: '322453fe8a568c43424e2f11b4c1164decf032ece5895d4468be80242e3c9ff6'
+  - attempted_at: '2026-09-24T05:41:30Z'
+    run_id: 'm0a_pilot_20260924_rerun02'
+    image: 'memecho/m0a-trace:stage0-v3'
+    outcome: 'worker initialization failed during model load'
+    reason: 'baseline container was restarted concurrently and bound HCCL port 16666'
+    run_directory: 'm0a/runs/m0a_pilot_20260924_rerun02/'
+  - attempted_at: '2026-09-24T05:52:01Z'
+    run_id: 'm0a_pilot_20260924_rerun03'
+    image: 'memecho/m0a-trace:stage0-v3'
+    outcome: 'service and requests succeeded; original validator produced a false negative'
+    reason: 'runtime appends a suffix to engine request IDs and exposes 21 DSA layers, while the original validator assumed exact IDs and 20 layers'
+    posthoc_validation: 'pass'
+    run_directory: 'm0a/runs/m0a_pilot_20260924_rerun03/'
+    response_sha256: '2677009641418e45b10396b55eb9a672ac69c79c2d46d025e088959efd598a58'
+    validation_sha256: 'e6cf093d01d3c74a7d62f515944ed426cbd3e4f944d968111e9cfc443c95b8b0'
+    audit_sha256: 'fbb1412a223ea0260f2b9a421197f2052474505f6376cb852d09e3ebb8988d92'
+
+pilot_acceptance:
+  trace_enabled_output_matches_baseline: true
+  selected_set_rows_captured: 672
+  profile_selected_set_rows_validated: 504
+  native_semantics_validated: true
+  dsa_layers: 21
+  request_linkage_validated: true
+  note: 'run manifest remains failed to preserve the original validator false negative; pilot_validation.json and artifact_audit.json are the derived acceptance evidence'
+
+main_experiment:
+  status: 'GLM engineering prevalidation complete; DeepSeek formal experiment not run'
+  synthetic_smoke_request_count_planned: 72
+  real_workload_corpus_present: false
+  analysis_file: null
+  prefetch_policy_implemented: false
+  offload_replay_started: false
+
+glm53_engineering_prevalidation:
+  evidence_class: 'engineering prevalidation only; synthetic inputs and tiny toy-trained model'
+  model:
+    id: 'inference-optimization/GLM-5.3-0.6B-A0.4B'
+    revision: '20aae340d157bd2215b9d81165be87e94686dfdf'
+    architecture: 'glm_moe_dsa / GlmMoeDsaForCausalLM'
+    weight_format: 'BF16 single-shard safetensors'
+    weight_sha256: '51bba6b768ddcdb97b7595d0b9a3c18cb82c4f8efa77e2f7924c4d1d46cb3aed'
+    tokenizer_sha256: '44556920e4507367e1615610a11aabf215ed123be7ec45ff217891b1b5a6a21a'
+  runtime:
+    npu: 0
+    tensor_parallel_size: 1
+    image: 'memecho/m0a-glm53-trace:v3'
+    image_id: 'sha256:8506acf12eb6f248758317414d2ed9b01db40f4b04d6abf5e853427aa8b57f50'
+    attention_backend: 'sfa'
+    native_operators: ['torch_npu.npu_lightning_indexer', 'index_cache_reuse']
+    raw_index_unit: 'KV token position'
+    compression_ratio: 1
+    logical_block_size: 128
+    selected_width: 2048
+    layers: 6
+    computed_layers: 3
+    reused_layers: 3
+  baseline:
+    run_id: 'm0a_glm53_baseline_20260926_r02'
+    repetitions: 3
+    identical: true
+    artifact_sha256: '6ef2c2cf609fe5b44a6cec4f8a0ae6e6c983105f91d51ce86910940f70de5e4b'
+  pilot:
+    run_id: 'm0a_glm53_pilot_20260926_r01'
+    original_manifest_status: 'failed due to validator range false negative'
+    posthoc_validation: 'pass'
+    trace_rows: 156
+    output_matches_baseline: true
+    validation_sha256: '6348827b39d81d96b6d7db784fc69013ea69255c22173f4a79ad5beb704b11cc'
+  unequal_pair_diagnostic:
+    run_id: 'm0a_glm53_pairs_20260926_r01'
+    requests_completed: 72
+    outcome: 'analysis rejected: 6/36 prefix comparisons mismatched under one-token length differences at 32K'
+  equalized_pairs:
+    file: 'm0a/workloads/glm53_tiny.synthetic.equalized.pairs.json'
+    sha256: 'ebb031634bb64a031cb5f255f987307a5f78ffa44f0ab2e2f528a6f007391cd9'
+    exact_event_control_token_length: true
+  accepted_pair_run:
+    run_id: 'm0a_glm53_pairs_equalized_20260926_r02'
+    requests: 72
+    pair_types: 12
+    trace_rows: 8424
+    exact_prefix_matches: true
+    repeat_signature_groups_identical: '24/24'
+    manifest_sha256: '88a3c776b04fcf894f6b0b8905cf2892ea9da6a274386fad5f4af719247601d0'
+    responses_sha256: 'b9c6262dff02cdeb1f2224dfdc389567b2060aed85fb3f599fa69f5a70f7625f'
+    analysis_sha256: '8ccd4846639122d09aa875cd468cc4e08549c84d6580d7a879a24e0279b47e00'
+    remote_raw_trace_sha256: 'ab3e6eadcdc6e52e720cf99cffef768e0f1dc52d995c7d34ee1b9f5cce9da16c'
+  research_gate:
+    formal_evidence: false
+    reason: 'one synthetic episode per cell and toy-trained tiny model; no offload or recall measurements'

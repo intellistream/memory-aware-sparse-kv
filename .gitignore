@@ -6,4 +6,14 @@ paper/*.out
 paper/*.pdf
 __pycache__/
 .venv/
-
+m0a/runs/
+m0a/artifacts/*
+!m0a/artifacts/glm53_tiny_model_manifest.json
+*.tar
+*.tar.gz
+*.bundle
+*.safetensors
+*.safetensors.index.json
+*.bin
+*.pt
+*.pth

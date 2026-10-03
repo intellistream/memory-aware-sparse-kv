@@ -30,3 +30,12 @@ The first milestone is a necessity study. Implementation expansion is gated on
 showing that tool calls, memory writes, consolidation, or task switches create
 material recall stalls that ECHO-style locality alone cannot hide.
 
+## Current validation state
+
+The preserved DeepSeek validation code is in `m0a/`. Its new `trace-replay`
+mode records output differences separately from hard request and trace
+failures; a successful result would be `engineering_validated`, with strict
+output equivalence marked `not_qualified`. The current checkout has only
+offline tests. The live launcher is blocked until its old Docker deployment
+path is replaced and checked against the rebuilt Kubernetes Pod. See
+[`docs/deepseek-staged-validation-plan.md`](docs/deepseek-staged-validation-plan.md).
