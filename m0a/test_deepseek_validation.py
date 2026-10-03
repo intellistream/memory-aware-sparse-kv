@@ -109,6 +109,48 @@ class DeepSeekTests(unittest.TestCase):
             self.assertEqual(set(event['query_assignment'][str(pos)].values()),{owner})
         self.assertEqual(len(self.rows[event['event_id']]),33*21)
 
+    def test_selected_drift_is_diagnostic_only_in_trace_replay(self):
+        with tempfile.TemporaryDirectory() as name:
+            root=Path(name)
+            raw=root/'raw';raw.mkdir()
+            target=next(r['request_id'] for r in self.responses if r['variant']=='control' and r['repetition']==0)
+            modified=False
+            for source in (self.root/'raw').glob('rank*.jsonl'):
+                if source.name!='rank7.jsonl':
+                    (raw/source.name).symlink_to(source)
+                    continue
+                with (raw/source.name).open('w') as out, source.open() as incoming:
+                    for line in incoming:
+                        row=json.loads(line)
+                        if row['request_id']==target and row['prompt_position']==63 and row['layer'].endswith('2.self_attn.attn'):
+                            row['raw_selected_ids'][1]=4
+                            line=json.dumps(row)+'\n'
+                            modified=True
+                        out.write(line)
+            self.assertTrue(modified)
+            with self.assertRaisesRegex(ValueError,'selected IDs differ'):
+                validate_native_trace(raw,root/'strict',self.responses,[(63,95)],self.profile)
+            evidence=validate_native_trace(raw,root/'replay',self.responses,[(63,95)],self.profile,
+                                           allow_selected_drift=True)
+            self.assertEqual(evidence['requests'],48)
+            self.assertGreater(evidence['pair_prefix_selected_id_differences'],0)
+            self.assertGreater(evidence['repeat_selected_id_differences'],0)
+            self.assertEqual(evidence['paired_effect_interpretation'],'exploratory')
+            sidecar=export_sidecar(self.responses,self.pairs,self.profile,evidence,
+                                  self.sidecar['snapshots'][0]['lanes'][0]['support_evidence'])
+            snapshots,_=validate_sidecar(sidecar,self.root)
+            rows=read_trace(root/'replay',snapshots,sidecar['events'],synthetic=False)
+            self.assertIn(4,next(row['raw_selected_ids'] for row in rows[target].values()
+                                 if row['prompt_position']==63 and row['layer'].endswith('2.self_attn.attn')))
+            path=raw/'rank7.jsonl'
+            lines=path.read_text().splitlines()
+            bad=json.loads(lines[0]);bad['cp_local_end']=999
+            lines[0]=json.dumps(bad)
+            path.write_text('\n'.join(lines)+'\n')
+            with self.assertRaisesRegex(ValueError,'CP ownership interval mismatch'):
+                validate_native_trace(raw,root/'invalid',self.responses,[(63,95)],self.profile,
+                                      allow_selected_drift=True)
+
     def test_bad_cp_owner_and_chunk_rejected(self):
         row=next(iter(self.rows[self.sidecar['events'][0]['event_id']].values()))
         for field,value in [('rank',6),('chunk_token_count',0),('query_global_index',-1),('cp_local_end',999)]:

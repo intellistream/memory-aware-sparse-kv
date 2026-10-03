@@ -1,6 +1,12 @@
 # 八卡 DeepSeek 自动工程验证
 
-`python3 scripts/launch_deepseek_validation.py` 默认仅打印计划，不连接服务器；加 `--execute` 启动服务器 worker 和本地 SHA-256 同步监护进程。启动入口确认两个 PID、15 秒 heartbeat 和首批四文件校验 ACK 后返回。每次在 `m0a/runs/deepseek_<UTC>_<random>/` 保存完整代码部署、commit 和 bundle。
+当前仅完成离线代码与测试。`python3 scripts/launch_deepseek_validation.py --validation-mode trace-replay` 只打印计划，不连接服务器。`--execute` 已明确阻断，因为以下部署与恢复流程依赖旧工作区的 Docker socket 和 `/workspace` 路径；新 Kubernetes Pod 适配及八卡实测尚未完成。不要将 `engineering_validated` 视为已有实测结果。
+
+`strict` 仍是默认模式，其原始重复输出与 trace-off/on 等价门槛保持不变。`trace-replay` 使用原部署命令的全新实例，跳过稳定候选筛选；trace-off/on 各需 48 次有效请求。重复输出和两阶段输出差异记录在独立的 `*-output-differences.json` 与 API 原始记录中；请求失败、输入 token 校验失败及次数不足仍直接失败。新模式与 `--repair`、`--diagnostic-only` 互斥。
+
+原生 trace 的 48 请求、33 位置、21 层、CP 归属、因果范围、准确输入及原生 selected set 都必须通过。跨重复和配对前缀的 selected set 差异仅作为诊断计数；存在差异时四组 CPU 回放的配对效果分析标为 `exploratory`。sidecar 使用每次 trace-on 的实际输入和原生选择。只有原服务恢复证据、四组回放产物与最终校验归档齐全时，监护进程才接受 `engineering_validated`；严格输出验收仍为 `not_qualified`。
+
+下面保留的是旧 Docker 环境的历史执行设计，供后续 Pod 适配参考，不是当前可执行步骤。历史入口会在 `m0a/runs/deepseek_<UTC>_<random>/` 保存代码部署、commit 和 bundle。
 
 先保存当前 `memecho-vllm-ascend` 的身份、完整配置和模型/tokenizer 证据，核验服务健康及完整输入 token IDs，再暂时停止并保留原容器。所有诊断在带任务归属标签的独立容器中进行；实验容器继承环境、挂载、设备、IPC 和通信配置。端口探测采用 `SO_REUSEADDR` 并确认无监听；启动前等待八卡 HBM 和设备进程释放。
 

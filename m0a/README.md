@@ -1,5 +1,11 @@
 # M0-A native selected-set observation
 
+The project is **memory-aware-sparse-kv**. Some pinned image names, environment
+variables, and archived run IDs below retain their historical identifiers.
+Commands that use `/workspace` or a private Docker socket describe the old
+workspace and are unavailable on the rebuilt Pod. The current DeepSeek launcher
+prints a dry-run plan and blocks `--execute` pending a verified Pod adapter.
+
 ## Status
 
 Stage 0 is sealed. The local baseline contains 16 serving configurations with
@@ -40,7 +46,7 @@ layers, and lacks MTP. See `docs/glm53-single-npu-prevalidation-report.md`.
 ### CPU tests and end-to-end synthetic fixture
 
 ```bash
-cd /home/ruan/memecho
+cd /path/to/memory-aware-sparse-kv
 python3 -m unittest discover -s m0a -p 'test_*.py' -v
 
 work=$(mktemp -d /tmp/m0a-e2e.XXXXXX)

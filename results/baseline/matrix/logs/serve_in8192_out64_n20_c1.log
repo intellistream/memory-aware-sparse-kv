@@ -1,0 +1,65 @@
+[W917 05:28:02.772997721 FunctionLoader.cpp:48] Warning: LD_PRELOAD detected, FunctionLoader prefers RTLD_DEFAULT for symbol resolution. (function operator())
+INFO 09-17 05:28:09 [__init__.py:44] Available plugins for group vllm.platform_plugins:
+INFO 09-17 05:28:09 [__init__.py:46] - ascend -> vllm_ascend:register
+INFO 09-17 05:28:09 [__init__.py:49] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+INFO 09-17 05:28:09 [__init__.py:238] Platform plugin ascend is activated
+INFO 09-17 05:28:09 [platform.py:62] Breakable cudagraph is force disabled on Ascend because DeepSeek V4 PIECEWISE cudagraph is not supported yet.
+2026-09-17 05:28:20,292 - 11950 - ServiceProfiler - INFO - VLLM_USE_V1 not set, auto-detected via vLLM 0.23.0+empty: default 1
+INFO 09-17 05:28:20 [__init__.py:115] Registered model loader `<class 'vllm_ascend.model_loader.netloader.netloader.ModelNetLoaderElastic'>` with load format `netloader`
+INFO 09-17 05:28:20 [__init__.py:115] Registered model loader `<class 'vllm_ascend.model_loader.rfork.rfork_loader.RForkModelLoader'>` with load format `rfork`
+`rope_parameters`'s factor field must be a float >= 1, got 16
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 16
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+`rope_parameters`'s factor field must be a float >= 1, got 16
+`rope_parameters`'s beta_fast field must be a float, got 32
+`rope_parameters`'s beta_slow field must be a float, got 1
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0xfffe96423ba0>, trust_remote_code=False, seed=0, num_prompts=20, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, custom_ensure_client_side_data=False, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, timed_trace_chunk_hash_size=16, timed_trace_sec_multiplier=1, timed_trace_label_timestamp='timestamp', timed_trace_label_input_length='input_length', timed_trace_label_output_length='output_length', timed_trace_label_hash_ids='hash_ids', blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=8192, random_output_len=64, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label=None, backend='openai', base_url='http://127.0.0.1:8900', host='127.0.0.1', port=8000, endpoint='/v1/completions', header=None, max_concurrency=1, model='dsv4', input_len=None, output_len=None, tokenizer='/workspace/memecho/models/DeepSeek-V4-Flash-w8a8-mtp', tokenizer_mode='deepseek_v4', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/workspace/memecho/results/baseline/matrix/raw', result_filename='serve_in8192_out64_n20_c1.json', ignore_eos=True, self_timed=None, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='99', goodput=None, request_id_prefix='bench-169f4ff3-', top_p=None, top_k=None, min_p=None, temperature=0.0, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, chat_template_kwargs=None, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds='25,50', plot_dataset_stats=False)
+INFO 09-17 05:28:22 [utils.py:90] Sampling input_len from [8192, 8192] and output_len from [64, 64]
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 1
+  0%|          | 0/20 [00:00<?, ?it/s]  5%|▌         | 1/20 [00:02<00:52,  2.78s/it] 10%|█         | 2/20 [00:05<00:47,  2.63s/it] 15%|█▌        | 3/20 [00:07<00:44,  2.60s/it] 20%|██        | 4/20 [00:10<00:43,  2.69s/it] 25%|██▌       | 5/20 [00:13<00:40,  2.71s/it] 30%|███       | 6/20 [00:16<00:37,  2.69s/it] 35%|███▌      | 7/20 [00:18<00:34,  2.67s/it] 40%|████      | 8/20 [00:21<00:32,  2.68s/it] 45%|████▌     | 9/20 [00:24<00:29,  2.66s/it] 50%|█████     | 10/20 [00:26<00:26,  2.64s/it] 55%|█████▌    | 11/20 [00:29<00:23,  2.66s/it] 60%|██████    | 12/20 [00:32<00:22,  2.80s/it] 65%|██████▌   | 13/20 [00:35<00:19,  2.79s/it] 70%|███████   | 14/20 [00:37<00:16,  2.72s/it] 75%|███████▌  | 15/20 [00:40<00:13,  2.68s/it] 80%|████████  | 16/20 [00:43<00:10,  2.67s/it] 85%|████████▌ | 17/20 [00:46<00:08,  2.78s/it] 90%|█████████ | 18/20 [00:48<00:05,  2.73s/it] 95%|█████████▌| 19/20 [00:51<00:02,  2.70s/it]100%|██████████| 20/20 [00:53<00:00,  2.67s/it]100%|██████████| 20/20 [00:53<00:00,  2.70s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     20        
+Failed requests:                         0         
+Maximum request concurrency:             1         
+Benchmark duration (s):                  53.91     
+Total input tokens:                      163840    
+Total generated tokens:                  1280      
+Request throughput (req/s):              0.37      
+Output token throughput (tok/s):         23.74     
+Peak output token throughput (tok/s):    17.00     
+Peak concurrent requests:                2.00      
+Total token throughput (tok/s):          3062.93   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          576.09    
+Median TTFT (ms):                        574.61    
+P99 TTFT (ms):                           607.17    
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          33.63     
+Median TPOT (ms):                        33.07     
+P99 TPOT (ms):                           39.87     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           61.60     
+Median ITL (ms):                         61.69     
+P99 ITL (ms):                            65.95     
+----------------End-to-end Latency----------------
+Mean E2EL (ms):                          2694.96   
+Median E2EL (ms):                        2650.24   
+P99 E2EL (ms):                           3107.72   
+---------------Speculative Decoding---------------
+Acceptance rate (%):                     84.30     
+Acceptance length:                       1.84      
+Drafts:                                  688       
+Draft tokens:                            688       
+Accepted tokens:                         580       
+Per-position acceptance (%):
+  Position 0:                            84.30     
+==================================================

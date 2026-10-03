@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the DeepSeek plan by default; --execute launches a detached validated run."""
+"""Print a DeepSeek validation plan; live execution awaits a verified Pod adapter."""
 from __future__ import annotations
 import argparse
 import json

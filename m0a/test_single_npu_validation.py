@@ -23,7 +23,7 @@ from transition_replay import read_trace, run_replay, validate_sidecar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.launch_single_npu_validation import (alive, detached_process, extract_checked,
-    retry_sync, safe_relative, synchronize_checkpoint)
+    retry_sync, safe_relative, synchronize_checkpoint, qualified_final_status)
 
 
 def chat(text):
@@ -322,6 +322,40 @@ class SingleNPUValidationTest(unittest.TestCase):
         self.assertFalse(plan['executed'])
         self.assertFalse(Path(plan['local_directory']).exists())
         self.assertEqual(plan['device'], 0)
+
+    def test_engineering_status_requires_restoration_archive_and_full_capture(self):
+        with tempfile.TemporaryDirectory() as name:
+            directory=Path(name)/'deepseek_20260929T000000Z_12345678'
+            archive=directory/'local-archive'
+            archive.mkdir(parents=True)
+            bundle=archive/'final-artifacts.bundle'
+            bundle.write_bytes(b'bundle')
+            digest=hashlib.sha256(bundle.read_bytes()).hexdigest()
+            write_json(archive/'final-code-provenance.json',{'git_commit':'a'*40,'bundle_sha256':digest})
+            write_json(directory/'final-local-verification.json',{'run_id':directory.name,'git_commit':'a'*40})
+            restoration={'restored':True,'healthy':True,'config_unchanged':True,'eight_npu_healthy':True}
+            write_json(directory/'restoration.json',restoration)
+            report={'status':'engineering_validated','validation_mode':'trace-replay',
+                    'strict_output_acceptance':'not_qualified','missing_artifacts':[],
+                    'completed_requests_per_phase':{'trace_off':48,'trace_on':48},'restoration':restoration}
+            write_json(directory/'report.json',report)
+            paths={'report.json','restoration.json','trace-validation.json','sidecar.json',
+                   'trace_off-output-differences.json','trace_on-output-differences.json',
+                   'implementation.bundle','code-provenance.json','local-archive/final-artifacts.bundle',
+                   'local-archive/final-code-provenance.json'}
+            paths.update(f'replay-{scope}-{capacity}mib/report.json'
+                         for scope in ('per_rank','aggregate') for capacity in (64,128))
+            write_json(directory/'final-checksums.json',{'files':[{'path':path} for path in paths]})
+            status={'status':'engineering_validated','original_service_restored':True}
+            self.assertTrue(qualified_final_status(directory,status))
+            status['original_service_restored']=False
+            with self.assertRaisesRegex(ValueError,'restoration'):
+                qualified_final_status(directory,status)
+            status['original_service_restored']=True
+            report['completed_requests_per_phase']['trace_on']=47
+            write_json(directory/'report.json',report)
+            with self.assertRaisesRegex(ValueError,'Incomplete requests'):
+                qualified_final_status(directory,status)
 
 
 if __name__ == '__main__':

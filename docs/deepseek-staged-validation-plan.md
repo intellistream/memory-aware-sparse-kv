@@ -1,5 +1,7 @@
 # DeepSeek 分层工程验收计划
 
+截至 2026-10-03，`memory-aware-sparse-kv` 已导入保存的源码并实现离线可测的 `trace-replay` 分层校验；没有在重建后的 Pod 上运行 DeepSeek。启动器的 `--execute` 被安全阻断，待核实八卡 Pod、共享只读 `/models` 中模型的实际路径与 revision，并实现新的服务管理适配后再启用。旧文档中的 Docker 容器和 `/workspace` 路径只代表历史环境。
+
 ## 背景与目标
 
 `deepseek_20260930T034055Z_dfe4add7` 的八种配置均未通过 20 次重复输出诊断。最后两种配置各有 4 次差异，首次差异位于生成 token 索引 20。隔离的 20 次算子观察仍有输出差异，但未形成可独立重放的“同输入、异输出”算子样本。真实 8-token compressor 缓存合同通过；原服务已恢复健康，最终 467 个文件通过 SHA-256 校验。该运行的报告和证据保存在 `m0a/runs/deepseek_20260930T034055Z_dfe4add7/`。

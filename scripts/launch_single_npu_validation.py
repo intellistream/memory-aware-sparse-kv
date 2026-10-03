@@ -214,6 +214,7 @@ def qualified_final_status(directory, current):
     records=json.loads((directory/'final-checksums.json').read_text())['files']
     paths={record['path'] for record in records}
     required={'report.json','restoration.json','trace-validation.json','sidecar.json',
+              'trace_off-output-differences.json','trace_on-output-differences.json',
               'implementation.bundle','code-provenance.json',
               'local-archive/final-artifacts.bundle','local-archive/final-code-provenance.json'}
     required.update(f'replay-{scope}-{capacity}mib/report.json'
@@ -286,7 +287,8 @@ def guardian(host, remote_directory, directory):
                     {'report.json', 'report.md', 'status.json', 'layout.json', 'trace-validation.json',
                      'replay-64mib/report.json', 'replay-128mib/report.json', 'deployment.json', 'resource-release.json',
                      'restoration.json', 'compressor-contract.json', 'identity.json', 'diagnostics.json', 'selected-config.json',
-                     'trace_off-failures.json', 'trace_on-failures.json', 'trace-launch.json'}]
+                     'trace_off-failures.json', 'trace_on-failures.json', 'trace_off-output-differences.json',
+                     'trace_on-output-differences.json', 'trace-launch.json'}]
                 paths += [directory / r['path'] for r in records if r['path'].startswith(('repair-source/', 'operator-source/', 'operator-diagnostics/'))
                           or r['path'] in {'experimental-provenance.json', 'operator-repairs.json', 'trace-deterministic-ranks.json',
                                             'compressor-contract-before.json', 'compressor-contract-repaired.json', 'npu-contract-tests.log'}]

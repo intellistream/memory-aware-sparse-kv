@@ -1,6 +1,8 @@
 """Candidate qualification retains cold responses and never weakens equivalence."""
 import copy
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -88,6 +90,75 @@ class StabilityTests(unittest.TestCase):
             self.assertEqual(failure['prompt_token_ids_sha256'],sha_ids([1,2]))
             self.assertEqual(failure['expected_token'],4)
             self.assertEqual(failure['actual_token'],3)
+
+    def test_trace_replay_records_output_drift_but_rejects_bad_input(self):
+        with tempfile.TemporaryDirectory() as root:
+            worker=self.worker(Path(root))
+            p=pair()
+            baseline=[{'pair_id':p['pair_id'],'variant':'event','repetition':0,
+                       'signature':{'token_ids':[4],'content':'4','reasoning':None,'finish_reason':'stop'}}]
+            with patch('deepseek_validation.request',side_effect=[api(3),api(5)]):
+                rows,failures=worker.request_sequence('trace_on',[(p,'event',0),(p,'event',1)],
+                    load_profile('deepseek_v4'),baseline=baseline,soft_output_differences=True)
+            self.assertEqual(len(rows),2)
+            self.assertFalse(failures)
+            differences=json.loads((worker.directory/'trace_on-output-differences.json').read_text())
+            self.assertEqual([d['kind'] for d in differences],['trace_on_off','repeat'])
+            self.assertEqual(differences[0]['response']['choices'][0]['token_ids'],[3])
+            self.assertEqual(differences[1]['first_differing_token_index'],0)
+            self.assertFalse(json.loads((worker.directory/'trace_on-failures.json').read_text()))
+            invalid=api(3)
+            invalid['prompt_token_ids']=[7,8]
+            with patch('deepseek_validation.request',return_value=invalid):
+                with self.assertRaisesRegex(ValueError,'request_or_token_validation'):
+                    worker.request_sequence('trace_off',[(p,'event',0)],load_profile('deepseek_v4'),
+                                            soft_output_differences=True)
+            hard=json.loads((worker.directory/'trace_off-failures.json').read_text())
+            self.assertEqual(hard[0]['kind'],'request_or_token_validation')
+
+    def test_trace_replay_cli_is_dry_and_legacy_execute_is_blocked(self):
+        script=Path(__file__).resolve().parents[1]/'scripts/launch_deepseek_validation.py'
+        dry=subprocess.run([sys.executable,str(script),'--validation-mode','trace-replay'],
+                           text=True,capture_output=True,check=True)
+        plan=json.loads(dry.stdout)
+        self.assertEqual(plan['candidate_order'],['original_fresh'])
+        self.assertEqual(plan['remote_directory'].split('/')[1:3],['root','memory-aware-sparse-kv'])
+        self.assertFalse(plan['execution_available'])
+        self.assertFalse(Path(plan['local_directory']).exists())
+        for extra in ('--repair','--diagnostic-only'):
+            result=subprocess.run([sys.executable,str(script),'--validation-mode','trace-replay',extra],
+                                  text=True,capture_output=True)
+            self.assertEqual(result.returncode,2)
+            self.assertIn('cannot be combined',result.stderr)
+        blocked=subprocess.run([sys.executable,str(script),'--validation-mode','trace-replay','--execute'],
+                               text=True,capture_output=True)
+        self.assertNotEqual(blocked.returncode,0)
+        self.assertIn('Live execution is disabled',blocked.stderr)
+
+    def test_trace_replay_uses_original_command_and_reports_separate_status(self):
+        with tempfile.TemporaryDirectory() as root:
+            worker=self.worker(Path(root))
+            write_json(worker.directory/'launch.json',{'validation_mode':'trace-replay'})
+            worker=Worker(Path(root),worker.run_id)
+            worker.original={'Config':{'Cmd':copy.deepcopy(COMMAND)}}
+            with patch.object(worker,'start_candidate') as started, \
+                 patch.object(worker,'requests',return_value=[{}]*48) as requested, \
+                 patch.object(worker,'command'),patch.object(worker,'cleanup'),patch.object(worker,'wait_release'):
+                rows=worker.trace_replay_baseline({'pairs':[]},load_profile('deepseek_v4'))
+            self.assertEqual(len(rows),48)
+            self.assertEqual(started.call_args.args[0]['command'],COMMAND)
+            self.assertTrue(requested.call_args.kwargs['soft_output_differences'])
+            self.assertEqual(json.loads((worker.directory/'selected-config.json').read_text())['diagnostic_requests'],0)
+            write_json(worker.directory/'restoration.json',{'restored':True})
+            write_json(worker.directory/'trace-validation.json',{'paired_effect_interpretation':'exploratory',
+                       'repeat_selected_id_differences':2,'pair_prefix_selected_id_differences':1})
+            write_json(worker.directory/'trace_on-output-differences.json',[{'kind':'repeat'}])
+            worker.report('engineering_validated')
+            report=json.loads((worker.directory/'report.json').read_text())
+            self.assertEqual(report['validation_mode'],'trace-replay')
+            self.assertEqual(report['strict_output_acceptance'],'not_qualified')
+            self.assertEqual(report['output_difference_counts']['trace_on'],1)
+            self.assertEqual(report['selected_set_consistency']['paired_effect_interpretation'],'exploratory')
 
     def test_logprobs_probe_is_separate_from_repeat_gate(self):
         with tempfile.TemporaryDirectory() as root:
