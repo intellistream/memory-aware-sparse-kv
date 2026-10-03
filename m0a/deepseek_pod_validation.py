@@ -89,8 +89,12 @@ class PodWorker(Worker):
         copied = target / 'vllm_ascend'
         shutil.copytree(package, copied, symlinks=True)
         patch = self.code_root / 'm0a/vllm-ascend-trace.patch'
-        subprocess.run(['git', 'apply', '--check', str(patch)], cwd=target, check=True, timeout=30)
-        subprocess.run(['git', 'apply', str(patch)], cwd=target, check=True, timeout=30)
+        # This run directory lives under the recovered repository. git apply
+        # silently skips paths outside that repository's current prefix, so
+        # apply directly to the isolated copy with zero fuzz instead.
+        patch_args = ['patch', '--batch', '--fuzz=0', '-p1', '-d', str(target), '-i', str(patch)]
+        subprocess.run(['patch', '--dry-run', *patch_args[1:]], check=True, timeout=30)
+        subprocess.run(patch_args, check=True, timeout=30)
         dsa = copied / 'attention/context_parallel/dsa_cp.py'
         runner = copied / 'worker/model_runner_v1.py'
         text = dsa.read_text()

@@ -131,9 +131,13 @@ def download_records(host, server_directory, records, local_directory):
     if not records:
         return
     paths = [safe_relative(r['path']) for r in records]
-    command = 'tar -cf - -C ' + shlex.quote(server_directory) + ' -- ' + ' '.join(map(shlex.quote, paths))
+    # Trace source copies can contain thousands of files. Send the name list
+    # through stdin so neither the local SSH argument nor the remote shell
+    # command crosses ARG_MAX. NUL framing also preserves unusual filenames.
+    command = 'tar -cf - -C ' + shlex.quote(server_directory) + ' --null --verbatim-files-from -T -'
+    names = ('\0'.join(paths) + '\0').encode()
     with tempfile.TemporaryFile() as stream:
-        subprocess.run(ssh_command(host, command), stdout=stream, timeout=900, check=True)
+        subprocess.run(ssh_command(host, command), input=names, stdout=stream, timeout=900, check=True)
         stream.seek(0)
         extract_checked(stream, records, local_directory)
 

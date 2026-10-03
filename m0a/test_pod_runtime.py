@@ -12,6 +12,7 @@ from unittest.mock import patch
 from m0a.deepseek_pod_validation import PodWorker
 from m0a.pod_runtime import (EXPECTED_VERSIONS, SupervisorService, model_inventory, owned_pids,
                              preflight, process_identity, service_command, stop_owned)
+from scripts.launch_single_npu_validation import download_records
 
 
 RUN_ID = 'deepseek_20261003T000000Z_1234abcd'
@@ -112,6 +113,17 @@ class PodRuntimeTests(unittest.TestCase):
                 worker.restore()
             self.assertEqual(calls, ['start'])
             self.assertTrue(json.loads((directory / 'restoration.json').read_text())['restored'])
+
+    def test_large_artifact_manifest_is_streamed_to_tar(self):
+        records = [{'path': f'trace-python/file-{i:05d}.py', 'size': 1, 'sha256': '0' * 64}
+                   for i in range(12000)]
+        with patch('scripts.launch_single_npu_validation.subprocess.run') as run, \
+             patch('scripts.launch_single_npu_validation.extract_checked'):
+            download_records('hust', '/remote/run', records, '/local/run')
+        args, kwargs = run.call_args
+        self.assertLess(len(args[0][-1]), 200)
+        self.assertIn(b'trace-python/file-11999.py\0', kwargs['input'])
+        self.assertEqual(kwargs['input'].count(b'\0'), len(records))
 
 
 if __name__ == '__main__':
