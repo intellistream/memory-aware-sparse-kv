@@ -1,0 +1,19 @@
+{
+  "run_id": "deepseek_20261004T032925Z_f0e69394",
+  "finished_at": "2026-10-04T04:17:08.526627+00:00",
+  "experiment_conclusion": "not_qualified",
+  "output_acceptance": "failed",
+  "hash_sync": "verified",
+  "service_health": "unverified",
+  "push": "pending",
+  "complete_acceptance": false,
+  "guardian_exit_code": 1,
+  "errors": [
+    "Final verification: Expecting value: line 1 column 1 (char 0)"
+  ],
+  "manifest_sha256": "1cb43d77a0a724bfb1c4f9c5591aff9495d7d80fa375b040342fae83cdd203cf",
+  "verified_files": 1801,
+  "local_run_directory": "/home/ruan/memecho/memory-aware-sparse-kv/m0a/runs/deepseek_20261004T032925Z_f0e69394",
+  "remote_run_directory": "/root/memory-aware-sparse-kv/m0a/runs/deepseek_20261004T032925Z_f0e69394",
+  "report_sha256": "765c245b993d0d75b326cb709a7aab0fb0a5efffd7987f5d1d82d49359de9215"
+}
