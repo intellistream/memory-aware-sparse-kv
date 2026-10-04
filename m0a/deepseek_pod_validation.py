@@ -13,7 +13,8 @@ from pathlib import Path
 
 from .contracts import sha256_file
 from .deepseek_validation import (Worker, SOURCE_PATHS, TaskDeadline, TOTAL_SECONDS,
-                                  extend_pairs, validate_layout, utc, write_json)
+                                  extend_pairs, validate_layout, utc, write_json,
+                                  stability_candidates)
 from .import_workloads import make_chat_tokenizer
 from .model_profiles import load_profile
 from .pod_runtime import (ExclusiveLock, SupervisorService, health, model_inventory,
@@ -32,6 +33,9 @@ class PodWorker(Worker):
                 'Pod worker requires explicit trace-replay runtime')
         require(not self.repair and not self.diagnostic_only, 'Pod execution accepts trace-replay only')
         self.model_dir = Path(launch['model_dir'])
+        self.workload = launch.get('workload', 'synthetic')
+        self.total_seconds = launch.get('total_timeout_seconds', TOTAL_SECONDS)
+        self.tau_root = Path(launch['tau_root']) if self.workload == 'tau3_v1.0.1' else None
         self.service = SupervisorService(self.root, self.model_dir)
         self.env = dict(os.environ)
         self.experiment: dict | None = None
@@ -42,13 +46,21 @@ class PodWorker(Worker):
         extra = []
         if stage == 'bootstrap':
             extra = [self.directory / name for name in
-                     ('pr-branch.bundle', 'branch-provenance.json', 'service-bootstrap.json')]
+                     ('source-branch.bundle', 'branch-provenance.json', 'service-bootstrap.json')]
         elif stage == 'inputs':
             trace = self.directory / 'trace-python/vllm_ascend'
             extra = [self.directory / 'trace-source.json',
                      trace / 'envs.py', trace / 'attention/context_parallel/dsa_cp.py',
                      trace / 'attention/context_parallel/m0a_selected_trace.py',
                      trace / 'worker/model_runner_v1.py']
+            if self.workload == 'tau3_v1.0.1':
+                extra += [self.directory / name for name in
+                          ('tau3-provenance.json', 'event-audit.json', 'episodes.json')]
+                extra += list(self.directory.glob('episode-*.jsonl'))
+        elif stage == 'report' and self.workload == 'tau3_v1.0.1':
+            locality = self.directory / 'locality.json'
+            if locality.exists():
+                extra = [locality]
         return super().checkpoint(stage, list(paths) + extra)
 
     def command(self, args, *, timeout=900, output=None, env=None):
@@ -176,6 +188,26 @@ class PodWorker(Worker):
 
     def prepare(self):
         self.update(stage='prepare_inputs')
+        if self.workload == 'tau3_v1.0.1':
+            inventory = json.loads((self.directory / 'identity.json').read_text())
+            tokenizer_hash = inventory['metadata']['tokenizer.json']['sha256']
+            executable = self.root / 'runtime/tau3-v1.0.1-venv/bin/python'
+            require(executable.is_file(), 'Pinned τ³ environment missing')
+            self.command([str(executable), '-m', 'm0a.tau3_workload', '--tau-root', str(self.tau_root),
+                          '--output', str(self.directory), '--tokenizer-sha256', tokenizer_hash],
+                         timeout=self.total_seconds, output=self.directory / 'tau3-collection.log',
+                         env=dict(os.environ, PYTHONPATH=str(self.code_root)))
+            result = json.loads((self.directory / 'pairs.json').read_text())
+            for pair in result['pairs']:
+                for variant in ('event', 'control'):
+                    item = pair[variant]
+                    actual = request({'model': 'dsv4', 'messages': item['messages'],
+                                      'add_generation_prompt': True},
+                                     url='http://127.0.0.1:8900/tokenize')
+                    require(actual['tokens'] == item['prompt_token_ids'],
+                            'Actual workload tokenizer differs')
+            (self.directory / 'prepare.log').write_text('Verified all τ³ message token IDs\n')
+            return result
         profile = load_profile('deepseek_v4')
         source = self.code_root / 'm0a/pairs.json'
         data = json.loads(source.read_text())
@@ -249,10 +281,11 @@ class PodWorker(Worker):
         write_json(self.directory / 'resource-release.json',
                    {'at': utc(), 'runtime': 'pod', 'owned_pids_stopped': killed})
 
-    def _launch(self, command: list[str], path: Path, *, trace=False, ranges=()):
+    def _launch(self, command: list[str], path: Path, *, trace=False, ranges=(), env_extra=None):
         self.wait_release()
         env = dict(os.environ, **self.service.environment(), MEMECHO_VALIDATION_RUN=self.run_id)
         env.pop('VLLM_ASCEND_M0A_TRACE_DIR', None)
+        env.update(env_extra or {})
         if trace:
             require(self.trace_source is not None, 'Trace source missing')
             env['PYTHONPATH'] = str(self.trace_source) + os.pathsep + env.get('PYTHONPATH', '')
@@ -271,11 +304,11 @@ class PodWorker(Worker):
         return self.experiment
 
     def start_candidate(self, candidate, path, *, operator_diagnostics=False):
-        require(not operator_diagnostics and candidate['id'] == 'original_fresh', 'Only original Pod configuration is supported')
+        require(not operator_diagnostics, 'Operator diagnostics unavailable in Pod runtime')
         self.update(stage='trace_off_startup', candidate=candidate['id'])
         write_json(path / 'launch.json', {'runtime': 'pod', 'command': candidate['command'],
                    'configuration': candidate, 'trace_enabled': False})
-        self._launch(candidate['command'], path / 'service.log')
+        self._launch(candidate['command'], path / 'service.log', env_extra=candidate.get('environment'))
         self.service_health(self.container)
 
     def start_trace(self, ranges):
@@ -287,17 +320,20 @@ class PodWorker(Worker):
                     'configuration': self.selected_config, 'original_command': self.original['Config']['Cmd'],
                     'trace_source_sha256': sha256(self.directory / 'trace-source.json'),
                     'positions': ranges})
-        self._launch(self.selected_config['command'], self.directory / 'trace_on-service.log', trace=True, ranges=ranges)
+        self._launch(self.selected_config['command'], self.directory / 'trace_on-service.log', trace=True,
+                     ranges=ranges, env_extra=self.selected_config.get('environment'))
         self.service_health(self.container)
 
     def trace_replay_baseline(self, pairs, profile):
+        if self.workload == 'tau3_v1.0.1':
+            return self.stable_workload_baseline(pairs, profile)
         candidate = {'id': 'original_fresh', 'command': list(self.original['Config']['Cmd']), 'changes': []}
         self.selected_config = candidate
         write_json(self.directory / 'selected-config.json',
                    {'id': candidate['id'], 'command': candidate['command'], 'changes': [],
                     'runtime': 'pod', 'trace_source_sha256': sha256(self.directory / 'trace-source.json'),
                     'original_command': candidate['command'], 'validation_mode': self.validation_mode,
-                    'diagnostic_requests': 0, 'baseline_requests': 48})
+                    'diagnostic_requests': 0, 'baseline_requests': 4*len(pairs['pairs'])})
         path = self.directory / 'trace-off-service'
         path.mkdir()
         try:
@@ -306,6 +342,86 @@ class PodWorker(Worker):
         finally:
             self.cleanup()
             self.wait_release()
+
+    def stable_workload_baseline(self, pairs, profile):
+        """Require a stable diagnostic and complete baseline before trace-on."""
+        diagnostics = self.directory / 'stability-diagnostics'
+        diagnostics.mkdir()
+        sample = next(p for p in pairs['pairs'] if p['context_target'] == 8192)
+        sequence = [(sample, v, i // 2) for i in range(10) for v in ('event', 'control')]
+        failures = []
+        for candidate in stability_candidates(self.original['Config']['Cmd'])[:6]:
+            path = diagnostics / candidate['id']
+            path.mkdir()
+            self.selected_config = candidate
+            try:
+                self.start_candidate(candidate, path)
+                records, hard = self.request_sequence('stability', sequence, profile,
+                                                       directory=path, collect=True,
+                                                       soft_output_differences=True)
+                drift = json.loads((path / 'stability-output-differences.json').read_text())
+                require(len(records) == 20 and not hard and not drift,
+                        f'Diagnostic output drift: {len(drift)} differences, {len(hard)} failures')
+                all_sequence = [(p, v, r) for p in pairs['pairs'] for r in range(2)
+                                for v in (('event', 'control') if r == 0 else ('control', 'event'))]
+                baseline, hard = self.request_sequence('trace_off', all_sequence, profile,
+                                                        collect=True, soft_output_differences=True)
+                drift = json.loads((self.directory / 'trace_off-output-differences.json').read_text())
+                require(len(baseline) == len(all_sequence) and not hard and not drift,
+                        f'Full baseline output drift: {len(drift)} differences, {len(hard)} failures')
+                write_json(self.directory / 'selected-config.json',
+                           {**candidate, 'validation_mode': self.validation_mode,
+                            'diagnostic_requests': 20, 'baseline_requests': len(baseline),
+                            'trace_off_and_on_share_configuration': True})
+                return baseline
+            except Exception as error:
+                failures.append({'candidate': candidate['id'], 'error': str(error)})
+                write_json(path / 'decision.json', failures[-1])
+            finally:
+                self.cleanup()
+                self.wait_release()
+        write_json(self.directory / 'stability-failures.json', failures)
+        raise RuntimeError('No output-stable Pod candidate passed diagnostics and full baseline')
+
+    def requests(self, stage, pairs, profile, baseline=None, *, soft_output_differences=False):
+        rows = super().requests(stage, pairs, profile, baseline,
+                                soft_output_differences=soft_output_differences)
+        if self.workload == 'tau3_v1.0.1':
+            differences = json.loads((self.directory / (stage + '-output-differences.json')).read_text())
+            require(not differences, f'{stage} output drift: {len(differences)} differences')
+        return rows
+
+    def validate_engineering_evidence(self):
+        super().validate_engineering_evidence()
+        if self.workload == 'tau3_v1.0.1':
+            from .tau3_locality import analyze
+            pairs = json.loads((self.directory / 'pairs.json').read_text())['pairs']
+            cells = {(p['workload_id'], p['event_type'], p['context_target']) for p in pairs}
+            require(len(pairs) == 48 and len(cells) == 24 and all(
+                sum((p['workload_id'], p['event_type'], p['context_target']) == cell for p in pairs) == 2
+                for cell in cells), 'τ³ task-chain coverage incomplete')
+            require(len({p['source_trace_id'] for p in pairs}) == 48,
+                    'τ³ task chains reuse an anchor trace')
+            for cell in cells:
+                members = [p for p in pairs if
+                           (p['workload_id'], p['event_type'], p['context_target']) == cell]
+                require(not set(members[0]['history_task_ids']) & set(members[1]['history_task_ids']),
+                        'Paired task chains share a source episode')
+            training_sources = {source for p in pairs if p['context_target'] == 8192
+                                for source in p['history_task_ids']}
+            evaluation_sources = {source for p in pairs if p['context_target'] == 32768
+                                  for source in p['history_task_ids']}
+            require(not training_sources & evaluation_sources,
+                    'τ³ source episodes leak from 8K training into 32K evaluation')
+            for phase in ('trace_off', 'trace_on'):
+                require(not json.loads((self.directory / (phase + '-output-differences.json')).read_text()),
+                        'Repeated or trace-off/on output differs')
+            trace = json.loads((self.directory / 'trace-validation.json').read_text())
+            require(trace['repeat_selected_ids_identical'] and
+                    trace['pair_prefix_selected_ids_identical'],
+                    'Native selected sets drift across repetitions or paired prefixes')
+            analyze(self.directory)
+        return True
 
     def contract(self, *, initialize_new_blocks=False):
         require(not initialize_new_blocks, 'Repair contract unsupported in Pod trace-replay')
@@ -328,6 +444,15 @@ class PodWorker(Worker):
         path = self.directory / 'report.json'
         report = json.loads(path.read_text())
         report['runtime'] = 'pod'
+        if self.workload == 'tau3_v1.0.1':
+            report['workload'] = self.workload
+            report['evidence_level'] = 'public τ³ task workload with actual benchmark tool calls'
+            report['strict_output_acceptance'] = 'passed' if status == 'engineering_validated' else 'failed'
+            locality = self.directory / 'locality.json'
+            report['event_locality_conclusion'] = (json.loads(locality.read_text())['overall']
+                if status == 'engineering_validated' and locality.exists() else 'not_qualified')
+            report['echo_mechanism_conclusion'] = 'not_qualified_without_indexer_scores_and_timed_replay'
+            report['limitations'].append('This workload adapter does not run the official τ³ user simulator or grader.')
         report['model_dir'] = str(self.model_dir)
         report['model_revision_verification'] = (
             'Preserved metadata hashes and indexed shard presence/size matched; no readable commit marker '
@@ -345,7 +470,7 @@ class PodWorker(Worker):
 def watchdog(root: Path, run_id: str) -> int:
     worker = PodWorker(root, run_id)
     saved = json.loads((worker.directory / 'worker-identity.json').read_text())
-    deadline = time.monotonic() + TOTAL_SECONDS + 1800
+    deadline = time.monotonic() + worker.total_seconds + 1800
     while time.monotonic() < deadline:
         state = json.loads((worker.directory / 'status.json').read_text())
         if state['stage'] == 'finished' and state.get('original_service_restored'):

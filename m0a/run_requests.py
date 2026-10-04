@@ -55,7 +55,7 @@ def prompt_hash(result):
 def payload_for(profile, prompt):
     return {
         'model': profile['served_model_name'],
-        'messages': [{'role': 'user', 'content': prompt}],
+        'messages': prompt if isinstance(prompt, list) else [{'role': 'user', 'content': prompt}],
         'temperature': 0,
         'seed': 0,
         'max_tokens': 32,

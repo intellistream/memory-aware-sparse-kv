@@ -191,7 +191,7 @@ def validate_cp(row):
 
 def validate_native_trace(raw_dir, output_dir, responses, ranges, profile, *, allow_selected_drift=False):
     lookup = {r['request_id']: r for r in responses}
-    require(len(lookup) == 48, 'Expected 48 unique trace-on requests')
+    require(len(lookup) == len(responses) and responses, 'Duplicate or missing trace-on request IDs')
     files = sorted(Path(raw_dir).glob('rank*.jsonl'))
     require(files, 'No native traces')
     output_dir = Path(output_dir)
@@ -247,7 +247,7 @@ def validate_native_trace(raw_dir, output_dir, responses, ranges, profile, *, al
             mapping = coverage[(response['request_id'], pos)]
             require(set(mapping) == set(range(2, 43, 2)), 'Incomplete 21-layer CP union window')
             require(len(set(mapping.values())) == 1, 'Layers disagree on CP query owner')
-    return {'raw_rows': count, 'window_rows': kept, 'requests': 48, 'positions_per_request': 33,
+    return {'raw_rows': count, 'window_rows': kept, 'requests': len(responses), 'positions_per_request': 33,
             'layers': 21, 'ranks_with_rows': sorted({v for m in coverage.values() for v in m.values()}),
             'query_assignment': dict(assignments), 'layer_names': [layers[i] for i in range(2, 43, 2)],
             'causal_scope_checked': True, 'repeat_selected_ids_identical': repeat_drift == 0,
@@ -663,7 +663,7 @@ class Worker(BaseWorker):
         with (directory/(stage+'-responses.jsonl')).open('w') as out, (directory/(stage+'-api.jsonl')).open('w') as raw:
             for pair,variant,repetition in sequence:
                 item = pair[variant]
-                payload = payload_for(profile,item['prompt'])
+                payload = payload_for(profile,item.get('messages', item['prompt']))
                 if logprobs:
                     payload.update(logprobs=True,top_logprobs=5)
                 started = time.time_ns()
@@ -728,7 +728,7 @@ class Worker(BaseWorker):
                     for v in (('event','control') if r==0 else ('control','event'))]
         records,_ = self.request_sequence(stage,sequence,profile,baseline=baseline,
                                           soft_output_differences=soft_output_differences)
-        require(len(records)==48,'Incomplete request phase')
+        require(len(records)==4*len(pairs['pairs']),'Incomplete request phase')
         return records
 
     def choose_configuration(self,pairs,profile):
@@ -877,6 +877,8 @@ class Worker(BaseWorker):
 
     def validate_engineering_evidence(self):
         """Check completed local evidence before reporting engineering success."""
+        pairs = json.loads((self.directory/'pairs.json').read_text())
+        expected_requests = 4 * len(pairs['pairs'])
         required=['pairs.json','selected-config.json','trace_off-api.jsonl','trace_on-api.jsonl',
                   'trace_off-responses.jsonl','trace_on-responses.jsonl','trace_off-failures.json',
                   'trace_on-failures.json','trace_off-output-differences.json',
@@ -892,17 +894,17 @@ class Worker(BaseWorker):
         require(json.loads((self.directory/'compressor-contract.json').read_text()).get('passed') is True,
                 'Compressor contract failed')
         for phase in ('trace_off','trace_on'):
-            require(len((self.directory/(phase+'-responses.jsonl')).read_text().splitlines())==48,
+            require(len((self.directory/(phase+'-responses.jsonl')).read_text().splitlines())==expected_requests,
                     f'Incomplete {phase} responses')
-            require(len((self.directory/(phase+'-api.jsonl')).read_text().splitlines())==48,
+            require(len((self.directory/(phase+'-api.jsonl')).read_text().splitlines())==expected_requests,
                     f'Incomplete {phase} API evidence')
             require(not json.loads((self.directory/(phase+'-failures.json')).read_text()),
                     f'{phase} has hard request failures')
         trace=json.loads((self.directory/'trace-validation.json').read_text())
-        require(trace['requests']==48 and trace['window_rows']==48*33*21 and trace['causal_scope_checked'],
+        require(trace['requests']==expected_requests and trace['window_rows']==expected_requests*33*21 and trace['causal_scope_checked'],
                 'Native trace coverage or causal contract failed')
         sidecar=json.loads((self.directory/'sidecar.json').read_text())
-        require(sidecar['selection_provenance']=='real_npu_native' and len(sidecar['events'])==48,
+        require(sidecar['selection_provenance']=='real_npu_native' and len(sidecar['events'])==expected_requests,
                 'Sidecar provenance or event count failed')
         for scope in ('per_rank','aggregate'):
             for capacity in (64,128):
@@ -911,8 +913,8 @@ class Worker(BaseWorker):
                 replay=json.loads((path/'report.json').read_text())
                 require(replay['config']['budget_scope']==scope and replay['config']['capacity_bytes']==capacity*1024**2,
                         'Replay configuration mismatch')
-                require(replay['training_events']==24 and replay['evaluation_events']==24 and
-                        len((path/'events.jsonl').read_text().splitlines())==48*14,
+                require(replay['training_events']==expected_requests//2 and replay['evaluation_events']==expected_requests//2 and
+                        len((path/'events.jsonl').read_text().splitlines())==expected_requests*14,
                         'Incomplete replay result')
                 require(all(sha256_file(Path(name))==digest for name,digest in replay['input_sha256'].items()),
                         'Replay input hash mismatch')
@@ -943,7 +945,8 @@ class Worker(BaseWorker):
               'missing_artifacts':[p for p in expected if not (self.directory/p).exists()], 'restoration':restoration,
               'evidence_level':'synthetic eight-NPU DeepSeek engineering validation',
               'selection_provenance':'real_npu_native' if 'native_trace_and_sidecar' in self.completed else 'not_validated',
-              'online_kv_restore':False,'requests_per_phase':48,'window_tokens':32,'final_sync_required':True,
+              'online_kv_restore':False,'requests_per_phase':4*len(json.loads((self.directory/'pairs.json').read_text())['pairs'])
+                  if (self.directory/'pairs.json').exists() else None,'window_tokens':32,'final_sync_required':True,
               'completed_requests_per_phase':{phase:len((self.directory/(phase+'-responses.jsonl')).read_text().splitlines())
                     if (self.directory/(phase+'-responses.jsonl')).exists() else 0 for phase in ('trace_off','trace_on')},
               'replay_reports':[p for p in expected if p.startswith('replay-')],
@@ -969,7 +972,7 @@ class Worker(BaseWorker):
         thread.start()
         signal.signal(signal.SIGTERM,terminate_worker)
         signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(TaskDeadline('Six-hour task limit exceeded')))
-        signal.alarm(TOTAL_SECONDS)
+        signal.alarm(self.total_seconds if hasattr(self, 'total_seconds') else TOTAL_SECONDS)
         error=None
         try:
             self.checkpoint('bootstrap',[self.directory/n for n in ('launch.json','code-provenance.json','implementation.bundle','deployment.json')])

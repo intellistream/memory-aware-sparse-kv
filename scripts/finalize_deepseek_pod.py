@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Monitor an archived Pod CPU continuation, mirror hashes, and publish PR evidence.
+"""Monitor an archived Pod CPU continuation, mirror hashes, and publish evidence.
 
-Run detached from the local PR checkout after resume_deepseek_pod_cpu.py starts
+Run detached from the local checkout after resume_deepseek_pod_cpu.py starts
 on the Pod. This process never changes the serving process or model mount.
 """
 from __future__ import annotations
@@ -133,16 +133,16 @@ def main() -> int:
         doc.write_text(result_document(args.run_id, remote_capture, post, report, provenance,
                                        service, verification['manifest_sha256'], verification))
         branch = subprocess.check_output(['git', '-C', str(ROOT), 'branch', '--show-current'], text=True).strip()
-        require(branch == 'feat/deepseek-trace-replay-offline', 'PR branch changed before publishing')
+        require(branch, 'Named branch required for publishing')
         subprocess.run(['git', '-C', str(ROOT), 'add', str(doc.relative_to(ROOT))], check=True)
         subprocess.run(['git', '-C', str(ROOT), 'commit', '--only', '-m',
                         f'Archive DeepSeek Pod engineering result {args.run_id}',
                         str(doc.relative_to(ROOT))], check=True)
         subprocess.run(['git', '-C', str(ROOT), 'push', 'origin',
-                        'feat/deepseek-trace-replay-offline'], check=True, timeout=180)
+                        f'HEAD:refs/heads/{branch}'], check=True, timeout=180)
         write_json(state_file, {'run_id': args.run_id, 'status': 'complete', 'finished_at': utc(),
                                 'verified_files': len(records), 'service_healthy': True,
-                                'report': str(post / 'report.json'), 'pr': 5})
+                                'report': str(post / 'report.json'), 'branch': branch})
         return 0
     except BaseException as error:
         write_json(state_file, {'run_id': args.run_id, 'status': 'failed', 'finished_at': utc(),

@@ -225,10 +225,16 @@ def qualified_final_status(directory, current):
     required.update(f'replay-{scope}-{capacity}mib/report.json'
                     for scope in ('per_rank','aggregate') for capacity in (64,128))
     require(required <= paths, 'Missing final trace-replay evidence')
+    tau3 = report.get('workload') == 'tau3_v1.0.1'
+    if tau3:
+        require({'locality.json', 'tau3-provenance.json', 'event-audit.json',
+                 'source-branch.bundle', 'branch-provenance.json'} <= paths,
+                'Missing public workload provenance or locality result')
+    expected_requests = 4 * len(json.loads((directory / 'pairs.json').read_text())['pairs']) if tau3 else 48
     require(report['status']=='engineering_validated' and report['validation_mode']=='trace-replay' and
-            report['strict_output_acceptance']=='not_qualified' and not report['missing_artifacts'],
+            report['strict_output_acceptance']==('passed' if tau3 else 'not_qualified') and not report['missing_artifacts'],
             'Engineering report does not qualify')
-    require(report['completed_requests_per_phase']=={'trace_off':48,'trace_on':48} and
+    require(report['completed_requests_per_phase']=={'trace_off':expected_requests,'trace_on':expected_requests} and
             report['restoration'].get('restored') is True, 'Incomplete requests or restoration')
     require(restoration.get('restored') is True and restoration.get('healthy') is True and
             restoration.get('config_unchanged') is True and restoration.get('eight_npu_healthy') is True and
@@ -244,7 +250,9 @@ def guardian(host, remote_directory, directory):
     state = {'pid': os.getpid(), 'run_id': directory.name, 'status': 'running', 'started_at': utc()}
     completed = set()
     lock, stop = threading.Lock(), threading.Event()
-    deadline = time.monotonic() + TOTAL_SECONDS + 1800
+    launch_path = directory / 'launch.json'
+    run_seconds = json.loads(launch_path.read_text()).get('total_timeout_seconds', TOTAL_SECONDS) if launch_path.exists() else TOTAL_SECONDS
+    deadline = time.monotonic() + run_seconds + 1800
     def update(**values):
         with lock:
             state.update(values, heartbeat=utc())
@@ -290,6 +298,7 @@ def guardian(host, remote_directory, directory):
                          if r['path'].startswith('implementation/') and '__pycache__' not in r['path']]
                 paths += [directory / r['path'] for r in records if (r['path'].startswith('replay-') and r['path'].endswith('/report.json')) or r['path'].startswith('diagnostics/') or r['path'] in
                     {'report.json', 'report.md', 'status.json', 'layout.json', 'trace-validation.json',
+                     'locality.json', 'tau3-provenance.json', 'event-audit.json',
                      'replay-64mib/report.json', 'replay-128mib/report.json', 'deployment.json', 'resource-release.json',
                      'restoration.json', 'compressor-contract.json', 'identity.json', 'diagnostics.json', 'selected-config.json',
                      'trace_off-failures.json', 'trace_on-failures.json', 'trace_off-output-differences.json',

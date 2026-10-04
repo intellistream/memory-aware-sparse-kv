@@ -183,26 +183,17 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(plan['requests_per_phase'],48)
         self.assertFalse(Path(plan['local_directory']).exists())
 
-    def test_previous_barrier_reuses_verified_archive_and_rechecks_health(self):
+    def test_previous_barrier_rejects_active_or_unrestored_run(self):
         import scripts.launch_deepseek_validation as launcher
         from types import SimpleNamespace
-        from contracts import sha256_file
-        with tempfile.TemporaryDirectory() as root:
-            run='deepseek_20260929T000000Z_12345678'
-            directory=Path(root)/'m0a/runs'/run;directory.mkdir(parents=True)
-            (directory/'report.json').write_text('{"status":"failed"}')
-            (directory/'final-local-verification.json').write_text(json.dumps({'run_id':run}))
-            (directory/'final-checksums.json').write_text(json.dumps({'files':[{'path':'report.json','sha256':sha256_file(directory/'report.json')}]}))
-            rows=[{'directory':'/remote/'+run,'run_id':run,'running':False,'stage':'finished'}]
-            audit={'healthy':True,'config_unchanged':True,'prior_run':run}
-            args=SimpleNamespace(host='test',remote_root='/remote')
-            with patch.object(launcher,'ROOT',Path(root)),patch.object(launcher,'remote',side_effect=[json.dumps(rows).encode(),json.dumps(audit).encode()]), \
-                    patch.object(launcher,'guardian') as guardian:
-                self.assertEqual(launcher.previous_run_barrier(args),audit)
-                guardian.assert_not_called()
-            (directory/'report.json').write_text('changed')
-            with patch.object(launcher,'ROOT',Path(root)),patch.object(launcher,'remote',return_value=json.dumps(rows).encode()):
-                with self.assertRaisesRegex(ValueError,'SHA-256'):launcher.previous_run_barrier(args)
+        args=SimpleNamespace(host='test',remote_root='/remote')
+        with patch.object(launcher,'remote',return_value=b'[]'):
+            self.assertEqual(launcher.previous_run_barrier(args),{'prior_runs_checked':True})
+        for reason in ('worker active','service restoration unverified'):
+            rows=[{'run':'deepseek_old','reason':reason}]
+            with patch.object(launcher,'remote',return_value=json.dumps(rows).encode()):
+                with self.assertRaisesRegex(ValueError,'Prior Pod validation needs recovery'):
+                    launcher.previous_run_barrier(args)
 
     def test_instrumentation_preserves_future_imports_and_compiles(self):
         source='from __future__ import annotations\nclass Model: pass\n'
