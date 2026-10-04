@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from m0a.tau3_locality import analyze
 from m0a.tau3_memory import Memory, digest
@@ -64,6 +66,26 @@ class LocalityAuditTests(unittest.TestCase):
             self.assertEqual(result['overall'], 'mixed_or_inconclusive')
             self.assertEqual(result['echo_mechanism_conclusion'],
                              'not_qualified_without_indexer_scores_and_timed_replay')
+
+
+class LauncherTemplateTests(unittest.TestCase):
+    def test_remote_bootstrap_has_no_unresolved_placeholders(self):
+        source = Path(__file__).resolve().parents[1] / 'scripts/launch_deepseek_validation.py'
+        tree = ast.parse(source.read_text())
+        launcher = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == 'launch_pod')
+        namespace = {'remote_directory': '/remote/m0a/runs/deepseek_test',
+                     'deployment': {'files': []},
+                     'args': SimpleNamespace(model_dir=Path('/models/model'), remote_root='/remote')}
+        assignments = [node for node in launcher.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == 'bootstrap'
+                               for target in node.targets)]
+        for assignment in assignments:
+            exec(compile(ast.Module(body=[assignment], type_ignores=[]), str(source), 'exec'), namespace)
+        bootstrap = namespace['bootstrap']
+        compile(bootstrap, '<remote bootstrap>', 'exec')
+        for placeholder in ('DIRECTORY', 'FILES', 'MODEL', 'ROOT'):
+            self.assertNotIn(placeholder, bootstrap)
 
 
 if __name__ == '__main__':

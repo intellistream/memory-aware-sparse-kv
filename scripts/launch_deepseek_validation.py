@@ -214,7 +214,11 @@ evidence={'checkout':str(checkout),'git_commit':provenance['head'],'models':mode
           'short_request_id':result['id'],'tool_smoke':tool_smoke}
 (p/'service-bootstrap.json').write_text(json.dumps(evidence,indent=2)+'\\n')
 print(json.dumps(evidence))
-'''.replace('DIRECTORY',repr(remote_directory)).replace('FILES',repr(deployment['files'])).replace('MODEL',repr(str(args.model_dir))).replace('ROOT',repr(args.remote_root))
+'''
+    bootstrap=(bootstrap.replace('DIRECTORY',repr(remote_directory))
+                        .replace('FILES',repr(deployment['files']))
+                        .replace('MODEL',repr(str(args.model_dir)))
+                        .replace('ROOT',repr(args.remote_root)))
     bootstrap_output=remote(args.host,bootstrap,timeout=3600).decode().splitlines()
     require(bootstrap_output, 'Remote Pod bootstrap returned no evidence')
     bootstrap_result=json.loads(bootstrap_output[-1])
