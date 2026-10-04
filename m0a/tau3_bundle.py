@@ -8,12 +8,16 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 
 TAU_COMMIT = 'fc0055dc4e0a316c3f83133267fbd6faaa770992'
 TAU_URL = 'https://github.com/sierra-research/tau2-bench.git'
 SOURCE_PREFIXES = ('src', 'data/tau2/domains/retail',
                    'data/tau2/domains/banking_knowledge')
+TARGET_PLATFORMS = ('manylinux_2_38_aarch64', 'manylinux_2_36_aarch64',
+                    'manylinux_2_34_aarch64', 'manylinux_2_31_aarch64',
+                    'manylinux_2_28_aarch64', 'manylinux_2_17_aarch64')
 
 
 def sha(path: Path) -> str:
@@ -44,14 +48,34 @@ def pack(directory: Path, source: Path, names: list[str], manifest_name: str,
             'manifest': manifest_name, 'files': len(records)}
 
 
+def prepare_uv(cache: Path) -> Path:
+    cache.mkdir(parents=True, exist_ok=True)
+    wheels = list(cache.glob('uv-0.11.8-*.whl'))
+    if not wheels:
+        subprocess.run([sys.executable, '-m', 'pip', 'download', '--only-binary=:all:',
+                        '--no-deps', '--dest', str(cache), '--platform',
+                        'manylinux_2_17_aarch64', '--python-version', '3.12',
+                        '--implementation', 'cp', '--abi', 'cp312', 'uv==0.11.8'],
+                       check=True, timeout=1200)
+        wheels = list(cache.glob('uv-0.11.8-*.whl'))
+    if len(wheels) != 1 or 'aarch64' not in wheels[0].name:
+        raise RuntimeError('Expected exactly one pinned aarch64 uv wheel')
+    target = cache / 'uv'
+    with zipfile.ZipFile(wheels[0]) as archive:
+        member = 'uv-0.11.8.data/scripts/uv'
+        with archive.open(member) as source, target.open('wb') as output:
+            shutil.copyfileobj(source, output)
+    target.chmod(0o755)
+    with target.open('rb') as source:
+        header = source.read(20)
+    if header[:4] != b'\x7fELF' or int.from_bytes(header[18:20], 'little') != 183:
+        raise RuntimeError('Pinned uv binary is not aarch64 ELF')
+    return target
+
+
 def build(directory: Path, requirements: Path, *, tau_source: Path,
-          wheelhouse: Path) -> dict:
-    uv_source = shutil.which('uv')
-    if not uv_source:
-        raise RuntimeError('uv executable is required for the offline Pod environment')
-    uv_version = subprocess.check_output([uv_source, '--version'], text=True).strip()
-    if uv_version != 'uv 0.11.8 (x86_64-unknown-linux-gnu)':
-        raise RuntimeError('Expected the pinned Linux uv 0.11.8 executable')
+          wheelhouse: Path, uv_cache: Path) -> dict:
+    uv_source = prepare_uv(uv_cache)
     if not tau_source.exists():
         subprocess.run(['git', 'clone', '--depth', '1', '--branch', 'v1.0.1',
                         TAU_URL, str(tau_source)], check=True, timeout=1200)
@@ -70,10 +94,15 @@ def build(directory: Path, requirements: Path, *, tau_source: Path,
     if not wheelhouse.exists() or not list(wheelhouse.glob('*.whl')):
         wheelhouse.mkdir(parents=True, exist_ok=True)
         subprocess.run([sys.executable, '-m', 'pip', 'download', '--only-binary=:all:',
-                        '--dest', str(wheelhouse), '-r', str(requirements)], check=True, timeout=2400)
+                        '--dest', str(wheelhouse),
+                        *[option for platform in TARGET_PLATFORMS
+                          for option in ('--platform', platform)],
+                        '--python-version', '3.12', '--implementation', 'cp',
+                        '--abi', 'cp312', '--abi', 'abi3', '--abi', 'none',
+                        '-r', str(requirements)], check=True, timeout=2400)
     wheels = [p.name for p in wheelhouse.glob('*.whl')]
-    if len(wheels) < 70:
-        raise RuntimeError('Pinned τ³ wheelhouse is incomplete')
+    if len(wheels) < 70 or not any('aarch64' in name for name in wheels) or any('x86_64' in name for name in wheels):
+        raise RuntimeError('Pinned aarch64 τ³ wheelhouse is incomplete or mixed-architecture')
     uv_target = directory / 'tau3-uv'
     shutil.copy2(uv_source, uv_target)
     uv_target.chmod(0o755)
@@ -83,4 +112,5 @@ def build(directory: Path, requirements: Path, *, tau_source: Path,
                            'tau3-wheelhouse-manifest.json',
                            {'requirements_sha256': sha(requirements)}),
             'uv': {'archive': uv_target.name, 'sha256': sha(uv_target),
-                   'size': uv_target.stat().st_size, 'version': uv_version}}
+                   'size': uv_target.stat().st_size, 'version': '0.11.8',
+                   'machine': 'aarch64'}}

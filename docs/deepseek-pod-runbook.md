@@ -35,7 +35,7 @@ python3 scripts/launch_deepseek_validation.py --execute --runtime pod \
 ```
 
 The launcher pins τ³-bench v1.0.1 to commit `fc0055dc4e0a316c3f83133267fbd6faaa770992`,
-transfers hash-checked source/data, pinned wheels, and `uv 0.11.8` from the local machine,
+transfers hash-checked source/data, aarch64 wheels, and aarch64 `uv 0.11.8` from the local machine,
 builds an isolated Pod environment with `uv` and installs dependencies offline, checks the service and
 executes a real retail tool call. It then transfers the checked implementation and starts
 a worker, an independent recovery watchdog, and a local SHA-256 synchronization guardian.

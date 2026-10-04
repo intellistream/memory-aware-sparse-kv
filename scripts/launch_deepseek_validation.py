@@ -115,7 +115,8 @@ def launch_pod(args, plan, directory, remote_directory):
     write_json(directory/'launch.json',plan)
     bundles = (build_tau3_bundles(directory, ROOT/'m0a/tau3-requirements.txt',
                                  tau_source=Path('/tmp/memecho-tau2-bench'),
-                                 wheelhouse=Path('/tmp/memecho-tau3-wheelhouse'))
+                                 wheelhouse=Path('/tmp/memecho-tau3-wheelhouse-aarch64'),
+                                 uv_cache=Path('/tmp/memecho-uv-aarch64'))
                if args.workload=='tau3_v1.0.1' else None)
     if bundles:
         write_json(directory/'tau3-bundles.json',bundles)
@@ -166,6 +167,7 @@ if launch['workload']=='tau3_v1.0.1':
  expected='fc0055dc4e0a316c3f83133267fbd6faaa770992'
  bundles=json.loads((p/'tau3-bundles.json').read_text())
  assert bundles==json.loads((p/'deployment.json').read_text())['tau3_bundles']
+ assert os.uname().machine==bundles['uv']['machine']
  def unpack(info,destination):
   archive_path=p/info['archive']
   assert archive_path.stat().st_size==info['size'] and sha256(archive_path)==info['sha256']
@@ -197,13 +199,14 @@ if launch['workload']=='tau3_v1.0.1':
   return manifest
  source_manifest=unpack(bundles['source'],tau)
  assert source_manifest['commit']==expected
- wheelhouse=root/'runtime/tau3-wheelhouse'
+ wheelhouse=root/'runtime/tau3-wheelhouse-aarch64'
  wheel_manifest=unpack(bundles['wheels'],wheelhouse)
  uv_info=bundles['uv']
  uv=p/uv_info['archive']
  assert uv.stat().st_size==uv_info['size'] and sha256(uv)==uv_info['sha256']
  uv.chmod(0o755)
- assert subprocess.check_output([str(uv),'--version'],text=True).strip()==uv_info['version']
+ uv_version=subprocess.check_output([str(uv),'--version'],text=True).strip()
+ assert uv_version.startswith('uv '+uv_info['version']+' ') and uv_info['machine'] in uv_version
  uv_env=dict(os.environ,UV_CACHE_DIR=str(root/'runtime/tau3-uv-cache'),
              UV_PYTHON_DOWNLOADS='never')
  venv=root/'runtime/tau3-v1.0.1-venv'
