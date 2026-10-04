@@ -177,8 +177,10 @@ def collect_episode(domain: str, task, path: Path, *, max_steps: int = 40) -> di
 
         env.get_response = audited_response
         agent = AuditedAgent(tools=env.get_tools(), domain_policy=env.get_policy(), llm='dsv4')
+        user_tools = (env.get_user_tools(include=task.user_tools or [])
+                      if env.user_tools is not None else None)
         user = AuditedUser(llm='dsv4', instructions=task.user_scenario,
-                           tools=env.get_user_tools(include=task.user_tools or []))
+                           tools=user_tools or None)
         orchestrator = Orchestrator(domain=domain, agent=agent, user=user,
                                     environment=env, task=task, max_steps=max_steps,
                                     max_errors=3, seed=0, timeout=240)

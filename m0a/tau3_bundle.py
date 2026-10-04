@@ -14,7 +14,7 @@ from pathlib import Path
 TAU_COMMIT = 'fc0055dc4e0a316c3f83133267fbd6faaa770992'
 TAU_URL = 'https://github.com/sierra-research/tau2-bench.git'
 SOURCE_PREFIXES = ('src', 'data/tau2/domains/retail',
-                   'data/tau2/domains/banking_knowledge')
+                   'data/tau2/domains/banking_knowledge', 'data/tau2/user_simulator')
 TARGET_PLATFORMS = ('manylinux_2_38_aarch64', 'manylinux_2_36_aarch64',
                     'manylinux_2_34_aarch64', 'manylinux_2_31_aarch64',
                     'manylinux_2_28_aarch64', 'manylinux_2_17_aarch64')
