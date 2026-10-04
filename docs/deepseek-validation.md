@@ -1,10 +1,18 @@
-# 八卡 DeepSeek 自动工程验证
+# 八卡 DeepSeek 验证设计与历史记录
 
-当前仅完成离线代码与测试。`python3 scripts/launch_deepseek_validation.py --validation-mode trace-replay` 只打印计划，不连接服务器。`--execute` 已明确阻断，因为以下部署与恢复流程依赖旧工作区的 Docker socket 和 `/workspace` 路径；新 Kubernetes Pod 适配及八卡实测尚未完成。不要将 `engineering_validated` 视为已有实测结果。
+当前公开任务的无人值守入口、验收门槛及状态文件见
+[Pod 运行手册](deepseek-pod-runbook.md)。执行需要显式传入
+`--execute --runtime pod --validation-mode trace-replay --workload tau3_v1.0.1`。
+返回码 0 仅证明后台 worker、独立恢复监护和本地同步监护已接管，
+实际结论由 `final-status.json` 的独立门槛决定。
 
-`strict` 仍是默认模式，其原始重复输出与 trace-off/on 等价门槛保持不变。`trace-replay` 使用原部署命令的全新实例，跳过稳定候选筛选；trace-off/on 各需 48 次有效请求。重复输出和两阶段输出差异记录在独立的 `*-output-differences.json` 与 API 原始记录中；请求失败、输入 token 校验失败及次数不足仍直接失败。新模式与 `--repair`、`--diagnostic-only` 互斥。
+公开任务固定于 τ³-bench v1.0.1，银行检索使用离线 BM25。
+有 48 对任务链，每对在 trace-off/on 各运行事件与对照的两次重复，
+每阶段预期 192 次请求。输出或原生 selected set 不稳定时不通过验收。
+CPU 回放只判断顺序预取局部性；缺少 indexer 分数与时序回放时，
+ECHO 机制结论明确为未达验收。
 
-原生 trace 的 48 请求、33 位置、21 层、CP 归属、因果范围、准确输入及原生 selected set 都必须通过。跨重复和配对前缀的 selected set 差异仅作为诊断计数；存在差异时四组 CPU 回放的配对效果分析标为 `exploratory`。sidecar 使用每次 trace-on 的实际输入和原生选择。只有原服务恢复证据、四组回放产物与最终校验归档齐全时，监护进程才接受 `engineering_validated`；严格输出验收仍为 `not_qualified`。
+以下是旧合成输入和 Docker 实验的历史设计，不代表公开任务运行结果。
 
 下面保留的是旧 Docker 环境的历史执行设计，供后续 Pod 适配参考，不是当前可执行步骤。历史入口会在 `m0a/runs/deepseek_<UTC>_<random>/` 保存代码部署、commit 和 bundle。
 
