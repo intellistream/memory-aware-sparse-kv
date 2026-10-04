@@ -37,12 +37,25 @@ def verify_tau(root: Path) -> dict:
                 'http_proxy', 'https_proxy', 'all_proxy'):
         os.environ.pop(key, None)
     root = root.resolve()
-    head = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
+    manifest_path = root / 'tau3-source-manifest.json'
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text())
+        head = manifest['commit']
+        records = manifest['files']
+        require(records and len({row['path'] for row in records}) == len(records),
+                'Invalid τ³ source manifest')
+        for row in records:
+            path = root / row['path']
+            require(path.is_file() and path.stat().st_size == row['size'] and
+                    hashlib.sha256(path.read_bytes()).hexdigest() == row['sha256'],
+                    'τ³ source checksum mismatch: ' + row['path'])
+    else:
+        head = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
+        dirty = subprocess.check_output(['git', '-C', str(root), 'status', '--porcelain', '--',
+                                         'src', 'data/tau2/domains/retail',
+                                         'data/tau2/domains/banking_knowledge'], text=True).strip()
+        require(not dirty, 'Pinned τ³ source or domain data was modified')
     require(head == TAU_COMMIT, 'τ³-bench commit differs from pinned v1.0.1')
-    dirty = subprocess.check_output(['git', '-C', str(root), 'status', '--porcelain', '--',
-                                     'src', 'data/tau2/domains/retail',
-                                     'data/tau2/domains/banking_knowledge'], text=True).strip()
-    require(not dirty, 'Pinned τ³ source or domain data was modified')
     source = root / 'src/tau2'
     require(source.is_dir(), 'Missing τ³-bench source')
     if str(root / 'src') not in sys.path:

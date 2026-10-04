@@ -18,6 +18,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from m0a.deepseek_validation import IMAGE, IMAGE_ID, TOTAL_SECONDS, utc, write_json
 from m0a.contracts import sha256_file
+from m0a.tau3_bundle import build as build_tau3_bundles
 from m0a.working_set import require
 from scripts.launch_single_npu_validation import (remote, transfer_files, archive_code, detached_process,
                                                  alive, guardian, status_remote, retry_sync)
@@ -112,10 +113,16 @@ def launch_pod(args, plan, directory, remote_directory):
     previous_run_barrier(args)
     directory.mkdir(parents=True,exist_ok=False)
     write_json(directory/'launch.json',plan)
+    bundles = (build_tau3_bundles(directory, ROOT/'m0a/tau3-requirements.txt',
+                                 tau_source=Path('/tmp/memecho-tau2-bench'),
+                                 wheelhouse=Path('/tmp/memecho-tau3-wheelhouse'))
+               if args.workload=='tau3_v1.0.1' else None)
+    if bundles:
+        write_json(directory/'tau3-bundles.json',bundles)
     files=deployment_files()
     commit=archive_code(directory,files,message='Archive Pod DeepSeek trace-replay implementation')
     deployment={'files':[{'path':'implementation/'+str(p.relative_to(ROOT)),'sha256':sha256_file(p),'size':p.stat().st_size}
-                         for p in files], 'git_commit':commit}
+                         for p in files], 'git_commit':commit, 'tau3_bundles': bundles}
     write_json(directory/'deployment.json',deployment)
     # Bundle the active source branch separately from the exact worker snapshot.
     branch=subprocess.check_output(['git','branch','--show-current'],cwd=ROOT,text=True).strip()
@@ -131,7 +138,11 @@ def launch_pod(args, plan, directory, remote_directory):
     transfer_files(args.host,remote_directory,[(p,str(p.relative_to(ROOT))) for p in files],destination_prefix='implementation/')
     transfer_files(args.host,remote_directory,[(directory/n,n) for n in
         ('launch.json','code-provenance.json','implementation.bundle','deployment.json','source-branch.bundle','branch-provenance.json')])
-    bootstrap='''import hashlib,json,os,pathlib,subprocess,sys,urllib.request
+    if bundles:
+        transfer_files(args.host,remote_directory,
+                       [(directory/value['archive'],value['archive']) for value in bundles.values()] +
+                       [(directory/'tau3-bundles.json','tau3-bundles.json')])
+    bootstrap='''import hashlib,json,os,pathlib,subprocess,sys,tarfile,urllib.request
 p=pathlib.Path(DIRECTORY)
 for row in FILES:
  f=p/row['path']
@@ -153,19 +164,60 @@ tool_smoke=None
 if launch['workload']=='tau3_v1.0.1':
  tau=pathlib.Path(launch['tau_root'])
  expected='fc0055dc4e0a316c3f83133267fbd6faaa770992'
- if not tau.exists():
-  tau.parent.mkdir(parents=True,exist_ok=True)
-  subprocess.run(['git','clone','--depth','1','--branch','v1.0.1',
-                  'https://github.com/sierra-research/tau2-bench.git',str(tau)],check=True,timeout=1200)
- assert subprocess.check_output(['git','-C',str(tau),'rev-parse','HEAD'],text=True).strip()==expected
+ bundles=json.loads((p/'tau3-bundles.json').read_text())
+ assert bundles==json.loads((p/'deployment.json').read_text())['tau3_bundles']
+ def unpack(info,destination):
+  archive_path=p/info['archive']
+  assert archive_path.stat().st_size==info['size'] and sha256(archive_path)==info['sha256']
+  destination.mkdir(parents=True,exist_ok=True)
+  with tarfile.open(archive_path,'r:gz') as archive:
+   members=archive.getmembers()
+   manifest_member=next(m for m in members if m.name==info['manifest'])
+   manifest=json.load(archive.extractfile(manifest_member))
+   rows={row['path']:row for row in manifest['files']}
+   assert len(rows)==info['files'] and {m.name for m in members}==set(rows)|{info['manifest']}
+   for member in members:
+    if member.name==info['manifest']: continue
+    name=pathlib.PurePosixPath(member.name)
+    assert member.isfile() and not name.is_absolute() and '..' not in name.parts
+    record=rows[member.name]
+    assert member.size==record['size']
+    target=destination/member.name
+    target.parent.mkdir(parents=True,exist_ok=True)
+    temporary=target.with_name(target.name+'.part')
+    digest=hashlib.sha256()
+    with archive.extractfile(member) as source,temporary.open('wb') as output:
+     for block in iter(lambda:source.read(1048576),b''):
+      output.write(block);digest.update(block)
+    assert digest.hexdigest()==record['sha256']
+    temporary.replace(target)
+   (destination/info['manifest']).write_text(json.dumps(manifest,sort_keys=True,indent=2))
+  actual={str(f.relative_to(destination)) for f in destination.rglob('*') if f.is_file()}
+  assert actual==set(rows)|{info['manifest']}
+  return manifest
+ source_manifest=unpack(bundles['source'],tau)
+ assert source_manifest['commit']==expected
+ wheelhouse=root/'runtime/tau3-wheelhouse'
+ wheel_manifest=unpack(bundles['wheels'],wheelhouse)
+ uv_info=bundles['uv']
+ uv=p/uv_info['archive']
+ assert uv.stat().st_size==uv_info['size'] and sha256(uv)==uv_info['sha256']
+ uv.chmod(0o755)
+ assert subprocess.check_output([str(uv),'--version'],text=True).strip()==uv_info['version']
+ uv_env=dict(os.environ,UV_CACHE_DIR=str(root/'runtime/tau3-uv-cache'),
+             UV_PYTHON_DOWNLOADS='never')
  venv=root/'runtime/tau3-v1.0.1-venv'
  if not (venv/'bin/python').exists():
-  subprocess.run([sys.executable,'-m','venv',str(venv)],check=True)
+  subprocess.run([str(uv),'venv','--python',sys.executable,str(venv)],
+                 check=True,env=uv_env)
  req=p/'implementation/m0a/tau3-requirements.txt'
  digest=hashlib.sha256(req.read_bytes()).hexdigest()
+ assert wheel_manifest['requirements_sha256']==digest
  marker=venv/'installed-requirements.sha256'
  if not marker.exists() or marker.read_text().strip()!=digest:
-  subprocess.run([str(venv/'bin/python'),'-m','pip','install','-r',str(req)],check=True,timeout=2400)
+  subprocess.run([str(uv),'pip','install','--offline','--no-index',
+                  '--find-links',str(wheelhouse),'--python',str(venv/'bin/python'),
+                  '-r',str(req)],check=True,env=uv_env,timeout=1200)
   marker.write_text(digest)
  tau_env={k:v for k,v in os.environ.items() if k.lower() not in
           ('http_proxy','https_proxy','all_proxy')}
