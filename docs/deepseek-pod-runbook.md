@@ -47,11 +47,14 @@ command for use only if the guardian exits unexpectedly.
 The worker collects 48 pairs: two domains × six event classes × 8K/32K contexts × two
 independent chains. Each phase attempts 192 requests: two variants and two repetitions
 per pair. The retail tools and offline BM25 banking search come from the pinned public
-package. The workload adapter renders a user turn from the public task scenario and
-chains real model/tool episodes; it does not run the official τ³ user simulator or grader.
+package. The pinned τ³ customer simulator and orchestrator run against the same local
+DeepSeek endpoint as the agent; banking retrieval uses offline BM25 with `top_k=3`.
+The run stops each task at the first complete, eligible native tool result and uses
+the authentic conversation prefix as workload input. It does not run the official τ³ grader.
 The event and control branches use the same token budget within two tokens. Role-bearing
 messages, actual tool results, token IDs, timestamps, source hashes and memory state
-versions are retained. Incomplete coverage, tool failures, token mismatch, output drift or
+versions are retained. Each banking chain must include a successful single `KB_search`.
+Incomplete coverage, tool failures, token mismatch, output drift or
 selected-set drift fail the acceptance gate.
 
 The worker first tests output stability using up to six fresh serving configurations. A

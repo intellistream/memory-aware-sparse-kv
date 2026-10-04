@@ -452,13 +452,20 @@ class PodWorker(Worker):
             report['event_locality_conclusion'] = (json.loads(locality.read_text())['overall']
                 if status == 'engineering_validated' and locality.exists() else 'not_qualified')
             report['echo_mechanism_conclusion'] = 'not_qualified_without_indexer_scores_and_timed_replay'
-            report['limitations'].append('This workload adapter does not run the official τ³ user simulator or grader.')
+            report['limitations'][0] = ('8K/32K constructed task chains are workload inputs, '
+                                         'not an official τ³ benchmark score.')
+            report['limitations'].append('The pinned τ³ user simulator is used; the official grader is not run.')
         report['model_dir'] = str(self.model_dir)
         report['model_revision_verification'] = (
             'Preserved metadata hashes and indexed shard presence/size matched; no readable commit marker '
             'or original per-shard hashes were available.')
         report['limitations'].append('The model commit and every weight shard byte were not independently proven.')
         write_json(path, report)
+        if self.workload == 'tau3_v1.0.1':
+            markdown = self.directory / 'report.md'
+            markdown.write_text(markdown.read_text().replace(
+                '证据仅限合成输入工程验证，不证明任务泛化、在线 offload 或 DMA stall 收益。',
+                '证据来自公开 τ³ 任务和原生工具；本次不运行官方评分，不证明在线 offload 或 DMA stall 收益。'))
         with (self.directory / 'report.md').open('a') as stream:
             stream.write('\n模型核验：保存的元数据哈希与索引分片数量/大小一致；无可读 commit 标记或原始逐分片哈希。\n')
 

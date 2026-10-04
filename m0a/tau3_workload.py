@@ -73,23 +73,6 @@ def verify_tau(root: Path) -> dict:
             'data_sha256': checksums, 'tasks': tasks}
 
 
-def scenario_text(task, domain: str) -> str:
-    scenario = task.user_scenario
-    instructions = scenario.instructions
-    if domain == 'retail':
-        data = instructions.model_dump() if hasattr(instructions, 'model_dump') else instructions
-        return '\n'.join(str(data[k]) for k in ('reason_for_call', 'known_info') if data.get(k))
-    return str(instructions)
-
-
-def tool_json(value) -> str:
-    if hasattr(value, 'model_dump'):
-        value = value.model_dump(mode='json')
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, default=str)
-
-
 def api_tokens(messages: list[dict]) -> list[int]:
     result = request({'model': 'dsv4', 'messages': messages, 'add_generation_prompt': True},
                      url='http://127.0.0.1:8900/tokenize')
@@ -98,25 +81,30 @@ def api_tokens(messages: list[dict]) -> list[int]:
     return ids
 
 
-def collect_episode(domain: str, task, path: Path, *, max_rounds: int = 8) -> dict:
+def collect_episode(domain: str, task, path: Path, *, max_steps: int = 40) -> dict:
+    """Run the pinned τ³ half-duplex protocol through the local DeepSeek API.
+
+    Stop at the first complete, eligible agent tool result.  The resulting
+    conversation is an authentic task prefix, not an official τ³ score.
+    """
+    from tau2.agent.llm_agent import LLMAgent
+    from tau2.data_model.message import AssistantMessage, MultiToolMessage, ToolCall, ToolMessage, UserMessage
     from tau2.domains.retail.environment import get_environment as retail_env
     from tau2.domains.banking_knowledge.environment import get_environment as bank_env
-    env = retail_env() if domain == 'retail' else bank_env(retrieval_variant='bm25', task=task)
-    initial = task.initial_state
-    require(not (initial and initial.message_history),
-            'Task has initial messages that this adapter cannot preserve')
-    env.set_state(initialization_data=initial.initialization_data if initial else None,
-                  initialization_actions=initial.initialization_actions if initial else None,
-                  message_history=initial.message_history or [] if initial else [])
-    tools = [tool.openai_schema for tool in env.get_tools()]
-    messages = [{'role': 'system', 'content': env.get_policy()},
-                {'role': 'user', 'content': scenario_text(task, domain)}]
+    from tau2.orchestrator.orchestrator import Orchestrator
+    from tau2.user.user_simulator import UserSimulator
+    from tau2.utils.llm_utils import to_litellm_messages
+    env = (retail_env() if domain == 'retail' else
+           bank_env(retrieval_variant='bm25', retrieval_kwargs={'top_k': 3}, task=task))
     events = []
+    call_counts = {}
     with path.open('w') as out:
-        for turn in range(max_rounds):
-            payload = {'model': 'dsv4', 'messages': messages, 'tools': tools,
-                       'tool_choice': 'auto', 'temperature': 0, 'seed': 0,
-                       'max_tokens': 512, 'return_token_ids': True}
+        def invoke(actor: str, messages, tools):
+            payload = {'model': 'dsv4', 'messages': to_litellm_messages(messages),
+                       'temperature': 0, 'seed': 0, 'max_tokens': 512,
+                       'return_token_ids': True}
+            if tools:
+                payload.update(tools=[tool.openai_schema for tool in tools], tool_choice='auto')
             started = time.time_ns()
             result = request(payload)
             finished = time.time_ns()
@@ -127,43 +115,97 @@ def collect_episode(domain: str, task, path: Path, *, max_rounds: int = 8) -> di
             require(isinstance(prompt_ids, list) and
                     len(prompt_ids) == result['usage']['prompt_tokens'],
                     'Missing or inconsistent actual prompt token IDs')
-            out.write(json.dumps({'kind': 'model', 'domain': domain, 'task_id': task.id,
-                                  'turn': turn, 'started_ns': started, 'finished_ns': finished,
+            out.write(json.dumps({'kind': 'model', 'actor': actor, 'domain': domain,
+                                  'task_id': task.id, 'started_ns': started, 'finished_ns': finished,
                                   'request': payload, 'response': result}, ensure_ascii=False) + '\n')
             out.flush()
-            assistant = {key: message[key] for key in ('role', 'content', 'tool_calls') if key in message}
-            messages.append(assistant)
             calls = message.get('tool_calls') or []
-            if not calls:
-                break
-            assistant_index = len(messages) - 1
             for call in calls:
-                name = call['function']['name']
-                args = json.loads(call['function']['arguments'])
-                require(isinstance(args, dict), 'Tool arguments must be an object')
-                started = time.time_ns()
-                try:
-                    value = env.make_tool_call(name, **args)
-                    content, error = tool_json(value), None
-                except Exception as exc:
-                    content, error = f'{type(exc).__name__}: {exc}', str(exc)
-                finished = time.time_ns()
-                reply = {'role': 'tool', 'tool_call_id': call['id'], 'content': content}
-                messages.append(reply)
-                event = {'source': 'benchmark_native', 'kind': 'tool_result', 'domain': domain,
-                         'task_id': task.id, 'tool_name': name, 'arguments': args,
-                         'result': content, 'error': error, 'call_id': call['id'],
-                         'started_ns': started, 'finished_ns': finished,
-                         'call_count': len(calls), 'assistant_index': assistant_index}
-                events.append(event)
-                out.write(json.dumps(event, ensure_ascii=False) + '\n')
-                out.flush()
-        else:
-            raise RuntimeError(f'Model did not finish task {domain}/{task.id} within {max_rounds} turns')
-    require(any(e['call_count'] == 1 and e['error'] is None for e in events),
-            f'No usable successful single benchmark tool call in {domain}/{task.id}')
+                call_counts[call['id']] = len(calls)
+            return result
+
+        def tau_calls(result, requestor):
+            return [ToolCall(id=call['id'], name=call['function']['name'],
+                             arguments=json.loads(call['function']['arguments']),
+                             requestor=requestor)
+                    for call in result['choices'][0]['message'].get('tool_calls') or []] or None
+
+        class AuditedAgent(LLMAgent):
+            def _generate_next_message(self, incoming, state):
+                if isinstance(incoming, MultiToolMessage):
+                    state.messages.extend(incoming.tool_messages)
+                else:
+                    state.messages.append(incoming)
+                result = invoke('agent', state.system_messages + state.messages, self.tools)
+                message = result['choices'][0]['message']
+                return AssistantMessage(role='assistant', content=message.get('content'),
+                                        tool_calls=tau_calls(result, 'assistant'), cost=0.0,
+                                        usage=result['usage'], raw_data=result)
+
+        class AuditedUser(UserSimulator):
+            def _generate_next_message(self, incoming, state):
+                if isinstance(incoming, MultiToolMessage):
+                    state.messages.extend(incoming.tool_messages)
+                elif incoming.has_content() or incoming.is_tool_call():
+                    state.messages.append(incoming)
+                result = invoke('user_simulator', state.system_messages + state.flip_roles(), self.tools)
+                message = result['choices'][0]['message']
+                return UserMessage(role='user', content=message.get('content'),
+                                   tool_calls=tau_calls(result, 'user'), cost=0.0,
+                                   usage=result['usage'], raw_data=result)
+
+        original_get_response = env.get_response
+
+        def audited_response(call):
+            started = time.time_ns()
+            response = original_get_response(call)
+            finished = time.time_ns()
+            eligible = (call.requestor == 'assistant' and not response.error and
+                        call_counts.get(call.id) == 1 and
+                        (domain != 'banking_knowledge' or call.name == 'KB_search'))
+            event = {'source': 'benchmark_native' if call.requestor == 'assistant'
+                     else 'benchmark_user_tool', 'kind': 'tool_result', 'domain': domain,
+                     'task_id': task.id, 'requestor': call.requestor,
+                     'tool_name': call.name, 'arguments': call.arguments,
+                     'result': response.content, 'error': response.error,
+                     'call_id': call.id, 'started_ns': started, 'finished_ns': finished,
+                     'call_count': call_counts.get(call.id), 'eligible': eligible}
+            events.append(event)
+            out.write(json.dumps(event, ensure_ascii=False) + '\n')
+            out.flush()
+            return response
+
+        env.get_response = audited_response
+        agent = AuditedAgent(tools=env.get_tools(), domain_policy=env.get_policy(), llm='dsv4')
+        user = AuditedUser(llm='dsv4', instructions=task.user_scenario,
+                           tools=env.get_user_tools(include=task.user_tools or []))
+        orchestrator = Orchestrator(domain=domain, agent=agent, user=user,
+                                    environment=env, task=task, max_steps=max_steps,
+                                    max_errors=3, seed=0, timeout=240)
+        orchestrator.initialize()
+        while not orchestrator.done:
+            orchestrator.step()
+            orchestrator._check_termination()
+            if any(event['eligible'] for event in events):
+                incoming = orchestrator.message
+                if isinstance(incoming, MultiToolMessage):
+                    orchestrator.agent_state.messages.extend(incoming.tool_messages)
+                elif isinstance(incoming, ToolMessage):
+                    orchestrator.agent_state.messages.append(incoming)
+                break
+        messages = to_litellm_messages(orchestrator.agent_state.system_messages +
+                                       orchestrator.agent_state.messages)
+    require(any(e['eligible'] for e in events),
+            f'No successful single native {"KB_search" if domain == "banking_knowledge" else "tool"} call')
+    indexes = {call['id']: index for index, message in enumerate(messages)
+               for call in (message.get('tool_calls') or [])}
+    for event in events:
+        event['assistant_index'] = indexes.get(event['call_id'])
+    require(all(e['assistant_index'] is not None for e in events if e['eligible']),
+            'Eligible tool call missing from agent conversation')
     return {'domain': domain, 'task_id': task.id, 'messages': messages, 'events': events,
-            'retrieval': 'offline_bm25' if domain == 'banking_knowledge' else None}
+            'retrieval': 'offline_bm25_top_k_3' if domain == 'banking_knowledge' else None,
+            'protocol': 'tau3_v1.0.1_user_simulator_orchestrator'}
 
 
 def memory_event(kind: str, memory: Memory, task_id: str) -> dict:
@@ -183,7 +225,7 @@ def memory_event(kind: str, memory: Memory, task_id: str) -> dict:
 
 
 def paired_tail(episode: dict, kind: str, memory: Memory) -> tuple[list[dict], list[dict], dict]:
-    call = next(e for e in episode['events'] if e['call_count'] == 1 and e['error'] is None)
+    call = next(e for e in episode['events'] if e['eligible'])
     if kind in {'tool_call', 'tool_result'}:
         actual = {'role': 'tool', 'tool_call_id': call['call_id'], 'content': call['result']}
         source = {'source': 'benchmark_native', 'tool_name': call['tool_name'],
@@ -234,6 +276,33 @@ def match_control(prefix: list[dict], event_tail: list[dict], control_tail: list
     return event_ids, best[0], best[1]
 
 
+def complete_fragments(messages: list[dict]) -> list[list[dict]]:
+    """Complete agent-visible prefixes, with no unanswered tool call."""
+    pending, fragments = set(), []
+    for index, message in enumerate(messages[1:], 1):
+        if message['role'] == 'assistant':
+            pending.update(call['id'] for call in message.get('tool_calls') or [])
+        elif message['role'] == 'tool':
+            pending.discard(message['tool_call_id'])
+        if not pending and message['role'] in ('assistant', 'tool'):
+            fragments.append(messages[1:index + 1])
+    return fragments
+
+
+def select_episodes(candidates: dict[str, list[dict]], lengths: dict[str, int]) -> list[dict]:
+    selected = []
+    for domain in DOMAINS:
+        ordered = sorted(candidates[domain], key=lambda e: (lengths[domain + ':' + e['task_id']], e['task_id']))
+        short = [e for e in ordered if lengths[domain + ':' + e['task_id']] <= 8192 - TOKEN_TOLERANCE]
+        medium = [e for e in ordered if lengths[domain + ':' + e['task_id']] <= 32768 - TOKEN_TOLERANCE]
+        require(len(short) >= 12 and len(medium) >= 48,
+                f'Insufficient {domain} episode lengths: {len(short)} fit 8K, {len(medium)} fit 32K')
+        first = short[:12]
+        used = {e['task_id'] for e in first}
+        selected.extend(first + [e for e in medium if e['task_id'] not in used][:36])
+    return selected
+
+
 def make_pairs(episodes: list[dict], output: Path, tokenizer_sha256: str) -> dict:
     require(len(episodes) == 96, 'Expected 48 real episodes per domain')
     by_domain = {d: [e for e in episodes if e['domain'] == d] for d in DOMAINS}
@@ -241,7 +310,11 @@ def make_pairs(episodes: list[dict], output: Path, tokenizer_sha256: str) -> dic
     for domain in DOMAINS:
         corpus = by_domain[domain]
         require(len(corpus) == 48, 'Missing domain episodes')
-        lengths = {e['task_id']: len(api_tokens(e['messages'])) for e in corpus}
+        fragments = {e['task_id']: complete_fragments(e['messages']) for e in corpus}
+        policy_lengths = {e['task_id']: len(api_tokens(e['messages'][:1])) for e in corpus}
+        fragment_lengths = {e['task_id']: [(len(api_tokens(e['messages'][:1] + fragment))
+                                            - policy_lengths[e['task_id']], fragment)
+                                           for fragment in fragments[e['task_id']]] for e in corpus}
         for index, episode in enumerate(corpus[:24]):
             kind = EVENTS[(index // 2) % 6]
             target = TARGETS[(index // 12) % 2]
@@ -265,12 +338,14 @@ def make_pairs(episodes: list[dict], output: Path, tokenizer_sha256: str) -> dic
             current = len(api_tokens(prefix + anchor_prefix + event_tail))
             while current < target - TOKEN_TOLERANCE and remaining:
                 gap = target - current
-                fitting = [e for e in remaining if lengths[e['task_id']] <= gap + TOKEN_TOLERANCE // 2]
+                fitting = [(length, e, fragment) for e in remaining
+                           for length, fragment in fragment_lengths[e['task_id']]
+                           if length <= gap + TOKEN_TOLERANCE // 2]
                 if not fitting:
                     break
-                previous = max(fitting, key=lambda e: lengths[e['task_id']])
+                _, previous, fragment = max(fitting, key=lambda item: item[0])
                 remaining.remove(previous)
-                prefix.extend(previous['messages'][1:])
+                prefix.extend(fragment)
                 history_task_ids.append(previous['task_id'])
                 current = len(api_tokens(prefix + anchor_prefix + event_tail))
             prefix.extend(anchor_prefix)
@@ -311,22 +386,28 @@ def collect(tau_root: Path, output: Path, tokenizer_sha256: str) -> dict:
     provenance = verify_tau(tau_root)
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / 'tau3-provenance.json', {k: v for k, v in provenance.items() if k != 'tasks'})
-    episodes = []
+    candidates = {domain: [] for domain in DOMAINS}
+    lengths = {}
     rejected = []
+    attempted = {domain: 0 for domain in DOMAINS}
     for domain in DOMAINS:
-        successes = 0
         for task in sorted(provenance['tasks'][domain], key=lambda t: t.id):
-            if successes == 48:
-                break
+            attempted[domain] += 1
             path = output / f'episode-{domain}-{task.id}.jsonl'
             try:
-                episodes.append(collect_episode(domain, task, path))
-                successes += 1
+                episode = collect_episode(domain, task, path)
+                candidates[domain].append(episode)
+                lengths[domain + ':' + task.id] = len(api_tokens(episode['messages']))
             except (ValueError, RuntimeError, KeyError, TypeError) as error:
                 rejected.append({'domain': domain, 'task_id': task.id, 'reason': str(error),
                                  'episode_log': str(path)})
-        require(successes == 48, f'Only {successes}/48 usable {domain} episodes')
-    write_json(output / 'rejected-episodes.json', rejected)
+            finally:
+                write_json(output / 'rejected-episodes.json', rejected)
+                write_json(output / 'collection-summary.json', {'attempted': attempted,
+                    'eligible': {d: len(candidates[d]) for d in DOMAINS},
+                    'rejected': len(rejected), 'banking_retrieval': 'bm25_top_k_3',
+                    'simulator': 'tau3_v1.0.1_on_local_dsv4'})
+    episodes = select_episodes(candidates, lengths)
     write_json(output / 'episodes.json', episodes)
     return make_pairs(episodes, output, tokenizer_sha256)
 

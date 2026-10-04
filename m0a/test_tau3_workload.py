@@ -9,7 +9,32 @@ from types import SimpleNamespace
 
 from m0a.tau3_locality import analyze
 from m0a.tau3_memory import Memory, digest
-from m0a.tau3_workload import DOMAINS, EVENTS, TARGETS
+from m0a.tau3_workload import DOMAINS, EVENTS, TARGETS, complete_fragments, select_episodes
+
+
+class EpisodeSelectionTests(unittest.TestCase):
+    def test_complete_fragments_wait_for_all_tool_results(self):
+        messages = [{'role': 'system', 'content': 'policy'},
+                    {'role': 'assistant', 'content': 'Hello'},
+                    {'role': 'user', 'content': 'Find a card'},
+                    {'role': 'assistant', 'content': None, 'tool_calls': [
+                        {'id': 'a'}, {'id': 'b'}]},
+                    {'role': 'tool', 'tool_call_id': 'a', 'content': 'first'},
+                    {'role': 'tool', 'tool_call_id': 'b', 'content': 'second'}]
+        fragments = complete_fragments(messages)
+        self.assertEqual([len(fragment) for fragment in fragments], [1, 5])
+
+    def test_selection_preserves_independent_short_and_long_pools(self):
+        candidates = {domain: [{'domain': domain, 'task_id': f'{i:03d}'} for i in range(50)]
+                      for domain in DOMAINS}
+        lengths = {f'{domain}:{i:03d}': 5000 if i < 12 else 9000
+                   for domain in DOMAINS for i in range(50)}
+        selected = select_episodes(candidates, lengths)
+        for domain in DOMAINS:
+            chosen = [e['task_id'] for e in selected if e in candidates[domain]]
+            self.assertEqual(len(chosen), 48)
+            self.assertEqual(len(set(chosen)), 48)
+            self.assertEqual(chosen[:12], [f'{i:03d}' for i in range(12)])
 
 
 class MemoryAuditTests(unittest.TestCase):

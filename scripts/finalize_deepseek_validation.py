@@ -21,7 +21,7 @@ def utc() -> str:
 
 
 def service_check(host: str, remote_directory: str, launch: dict) -> dict:
-    code = '''import json,pathlib,sys
+    code = '''import contextlib,io,json,pathlib,sys
 p=pathlib.Path(DIRECTORY)
 sys.path.insert(0,str(p/'implementation'))
 from m0a.pod_runtime import SupervisorService,health,owned_pids,service_command,sha256
@@ -35,9 +35,11 @@ preflight=json.loads((p/'preflight.json').read_text()) if (p/'preflight.json').e
 bootstrap=json.loads((p/'service-bootstrap.json').read_text())
 assert saved is None or service_command(model)==saved['Config']['Cmd']
 assert sha256(service.conf)==(preflight or bootstrap)['supervisor_config_sha256']
-check(tuple(range(8)),65536)
+with contextlib.redirect_stdout(io.StringIO()):
+ hbm=check(tuple(range(8)),65536)
 print(json.dumps({'healthy':True,'process_identity':identity,'models':models,
                   'config_unchanged':True,'eight_npu_healthy':True,
+                  'hbm_used_mb':hbm,
                   'owned_processes_remaining':owned_pids(p.name)}))
 '''.replace('DIRECTORY',repr(remote_directory)).replace('ROOT',repr(launch['remote_directory'].split('/m0a/runs/')[0])).replace('MODEL',repr(launch['model_dir']))
     return json.loads(remote(host, code, timeout=90))
