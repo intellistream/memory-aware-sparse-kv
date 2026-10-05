@@ -1,7 +1,7 @@
 """Collect auditable τ³-bench task/tool episodes through the served DeepSeek API.
 
-This is a workload adapter, not a τ³-bench score: user turns are rendered from
-the public task scenario and no τ user simulator or official grader is run.
+This is a workload adapter, not a τ³-bench score: the pinned τ³ user simulator
+and orchestrator run against the local model, but the official grader is not run.
 """
 from __future__ import annotations
 
@@ -81,6 +81,18 @@ def api_tokens(messages: list[dict]) -> list[int]:
     return ids
 
 
+def record_user_incoming(incoming, state) -> None:
+    """Record an incoming simulator message in pinned τ³ protocol order."""
+    from tau2.data_model.message import MultiToolMessage, ToolMessage
+
+    if isinstance(incoming, MultiToolMessage):
+        state.messages.extend(incoming.tool_messages)
+    elif isinstance(incoming, ToolMessage):
+        state.messages.append(incoming)
+    elif incoming.has_content() or incoming.is_tool_call():
+        state.messages.append(incoming)
+
+
 def collect_episode(domain: str, task, path: Path, *, max_steps: int = 40) -> dict:
     """Run the pinned τ³ half-duplex protocol through the local DeepSeek API.
 
@@ -144,10 +156,7 @@ def collect_episode(domain: str, task, path: Path, *, max_steps: int = 40) -> di
 
         class AuditedUser(UserSimulator):
             def _generate_next_message(self, incoming, state):
-                if isinstance(incoming, MultiToolMessage):
-                    state.messages.extend(incoming.tool_messages)
-                elif incoming.has_content() or incoming.is_tool_call():
-                    state.messages.append(incoming)
+                record_user_incoming(incoming, state)
                 result = invoke('user_simulator', state.system_messages + state.flip_roles(), self.tools)
                 message = result['choices'][0]['message']
                 return UserMessage(role='user', content=message.get('content'),

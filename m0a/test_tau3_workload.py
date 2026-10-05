@@ -9,7 +9,40 @@ from types import SimpleNamespace
 
 from m0a.tau3_locality import analyze
 from m0a.tau3_memory import Memory, digest
-from m0a.tau3_workload import DOMAINS, EVENTS, TARGETS, complete_fragments, select_episodes
+from m0a.tau3_workload import (DOMAINS, EVENTS, TARGETS, complete_fragments,
+                              record_user_incoming, select_episodes)
+
+
+class UserHistoryTests(unittest.TestCase):
+    def test_pinned_tau_user_tool_replies_keep_ids_through_role_flip(self):
+        try:
+            from tau2.data_model.message import (AssistantMessage, MultiToolMessage,
+                                                 SystemMessage, ToolCall, ToolMessage, UserMessage)
+            from tau2.user.user_simulator_base import UserState
+            from tau2.utils.llm_utils import to_litellm_messages
+        except ImportError:
+            self.skipTest('Pinned τ³ dependencies are available in the Pod environment')
+
+        call = ToolCall(id='user-call-034', name='submit_transfer',
+                        arguments={}, requestor='user')
+        state = UserState(system_messages=[SystemMessage(role='system', content='scenario')],
+                          messages=[UserMessage(role='user', tool_calls=[call])])
+        single = ToolMessage(id=call.id, role='tool', content='Transfer request submitted',
+                             requestor='user')
+        record_user_incoming(single, state)
+        self.assertIs(state.messages[-1], single)
+        self.assertEqual(state.messages[-1].requestor, 'user')
+        second = ToolMessage(id='user-call-035', role='tool', content='Second result',
+                             requestor='user')
+        record_user_incoming(MultiToolMessage(role='tool', tool_messages=[second]), state)
+        record_user_incoming(AssistantMessage(role='assistant', content='Continue'), state)
+        record_user_incoming(AssistantMessage(role='assistant', content=None), state)
+        flipped = to_litellm_messages(state.system_messages + state.flip_roles())
+        self.assertEqual([message['tool_call_id'] for message in flipped
+                          if message['role'] == 'tool'], ['user-call-034', 'user-call-035'])
+        self.assertEqual(flipped[1]['role'], 'assistant')
+        self.assertEqual(flipped[1]['tool_calls'][0]['id'], 'user-call-034')
+        self.assertEqual(flipped[-1], {'role': 'user', 'content': 'Continue'})
 
 
 class EpisodeSelectionTests(unittest.TestCase):
