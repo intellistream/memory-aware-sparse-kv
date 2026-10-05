@@ -662,6 +662,8 @@ class Worker(BaseWorker):
         self.update(stage=stage,completed_requests=0)
         with (directory/(stage+'-responses.jsonl')).open('w') as out, (directory/(stage+'-api.jsonl')).open('w') as raw:
             for pair,variant,repetition in sequence:
+                if hasattr(self, 'check_phase_deadline'):
+                    self.check_phase_deadline()
                 item = pair[variant]
                 payload = payload_for(profile,item.get('messages', item['prompt']))
                 if logprobs:
@@ -971,7 +973,7 @@ class Worker(BaseWorker):
         thread=threading.Thread(target=self.heartbeat,daemon=True)
         thread.start()
         signal.signal(signal.SIGTERM,terminate_worker)
-        signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(TaskDeadline('Six-hour task limit exceeded')))
+        signal.signal(signal.SIGALRM,lambda *_: (_ for _ in ()).throw(TaskDeadline('Worker total time limit exceeded')))
         signal.alarm(self.total_seconds if hasattr(self, 'total_seconds') else TOTAL_SECONDS)
         error=None
         try:

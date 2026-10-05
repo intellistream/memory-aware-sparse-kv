@@ -70,7 +70,7 @@ def launch(args):
           'image_id':IMAGE_ID if args.runtime=='docker' else None,
           'requests_per_phase':192 if args.workload=='tau3_v1.0.1' else 48,'repetitions':2,
           'window_tokens':32,'capacity_mib':[64,128],'budget_scopes':['per_rank','aggregate'],'prefetch_budget_mib':8,
-          'total_timeout_seconds':86400 if args.workload=='tau3_v1.0.1' else TOTAL_SECONDS,
+          'total_timeout_seconds':43200 if args.workload=='tau3_v1.0.1' else TOTAL_SECONDS,
           'stage_sync_required':True,'restore_original_service':True,
           'container_name':'memecho-'+run_id if args.runtime=='docker' else None,
           'supervisor_service':'memecho-deepseek' if args.runtime=='pod' else None,'executed':args.execute,

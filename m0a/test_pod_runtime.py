@@ -1,8 +1,11 @@
 """Pod adapter checks that do not require an NPU or a listening socket."""
 import json
+import hashlib
+import io
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -12,7 +15,7 @@ from unittest.mock import patch
 from m0a.deepseek_pod_validation import PodWorker
 from m0a.pod_runtime import (EXPECTED_VERSIONS, SupervisorService, model_inventory, owned_pids,
                              preflight, process_identity, service_command, stop_owned)
-from scripts.launch_single_npu_validation import download_records
+from scripts.launch_single_npu_validation import download_records, extract_checked
 
 
 RUN_ID = 'deepseek_20261003T000000Z_1234abcd'
@@ -133,6 +136,20 @@ class PodRuntimeTests(unittest.TestCase):
         self.assertIn('--hard-dereference', args[0][-1])
         self.assertIn(b'trace-python/file-11999.py\0', kwargs['input'])
         self.assertEqual(kwargs['input'].count(b'\0'), len(records))
+
+    def test_compressed_sync_verifies_original_file_hash(self):
+        content = b'authentic trace rows\n' * 1000
+        record = {'path': 'traces/rank0.jsonl', 'size': len(content),
+                  'sha256': hashlib.sha256(content).hexdigest()}
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode='w:gz') as out:
+            info = tarfile.TarInfo(record['path'])
+            info.size = len(content)
+            out.addfile(info, io.BytesIO(content))
+        archive.seek(0)
+        with tempfile.TemporaryDirectory() as name:
+            extract_checked(archive, [record], name)
+            self.assertEqual((Path(name) / record['path']).read_bytes(), content)
 
 
 if __name__ == '__main__':

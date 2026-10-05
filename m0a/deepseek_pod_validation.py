@@ -41,6 +41,17 @@ class PodWorker(Worker):
         self.experiment: dict | None = None
         self.trace_source: Path | None = None
         self.restore_required = False
+        self.phase_deadline = None
+        self.phase_label = None
+
+    def set_phase_budget(self, label: str, seconds: int) -> None:
+        self.phase_label = label
+        self.phase_deadline = time.monotonic() + seconds
+        self.update(phase_budget=label, phase_budget_seconds=seconds)
+
+    def check_phase_deadline(self) -> None:
+        if self.phase_deadline is not None and time.monotonic() >= self.phase_deadline:
+            raise TaskDeadline(f'{self.phase_label} time limit exceeded')
 
     def checkpoint(self, stage, paths):
         extra = []
@@ -55,7 +66,8 @@ class PodWorker(Worker):
                      trace / 'worker/model_runner_v1.py']
             if self.workload == 'tau3_v1.0.1':
                 extra += [self.directory / name for name in
-                          ('tau3-provenance.json', 'event-audit.json', 'episodes.json')]
+                          ('tau3-provenance.json', 'event-audit.json', 'episodes.json',
+                           'context-feasibility.json')]
                 extra += list(self.directory.glob('episode-*.jsonl'))
         elif stage == 'report' and self.workload == 'tau3_v1.0.1':
             locality = self.directory / 'locality.json'
@@ -74,6 +86,12 @@ class PodWorker(Worker):
                 return ''
             return data
         require(not args or args[0] != 'docker', 'Docker execution is disabled in Pod runtime')
+        if self.workload == 'tau3_v1.0.1':
+            if any('transition_replay.py' in str(arg) for arg in args) and self.phase_label != 'cpu_replay':
+                self.set_phase_budget('cpu_replay', 2 * 3600)
+            self.check_phase_deadline()
+            if self.phase_deadline is not None:
+                timeout = min(timeout, max(1, self.phase_deadline - time.monotonic()))
         return super().command(args, timeout=timeout, output=output, env=env)
 
     def inspect(self, name):
@@ -189,13 +207,14 @@ class PodWorker(Worker):
     def prepare(self):
         self.update(stage='prepare_inputs')
         if self.workload == 'tau3_v1.0.1':
+            self.set_phase_budget('collection_and_pairs', 4 * 3600)
             inventory = json.loads((self.directory / 'identity.json').read_text())
             tokenizer_hash = inventory['metadata']['tokenizer.json']['sha256']
             executable = self.root / 'runtime/tau3-v1.0.1-venv/bin/python'
             require(executable.is_file(), 'Pinned τ³ environment missing')
             self.command([str(executable), '-m', 'm0a.tau3_workload', '--tau-root', str(self.tau_root),
                           '--output', str(self.directory), '--tokenizer-sha256', tokenizer_hash],
-                         timeout=self.total_seconds, output=self.directory / 'tau3-collection.log',
+                         timeout=4 * 3600, output=self.directory / 'tau3-collection.log',
                          env=dict(os.environ, PYTHONPATH=str(self.code_root)))
             result = json.loads((self.directory / 'pairs.json').read_text())
             for pair in result['pairs']:
@@ -206,6 +225,9 @@ class PodWorker(Worker):
                                      url='http://127.0.0.1:8900/tokenize')
                     require(actual['tokens'] == item['prompt_token_ids'],
                             'Actual workload tokenizer differs')
+            self.check_phase_deadline()
+            self.phase_deadline = None
+            self.phase_label = None
             (self.directory / 'prepare.log').write_text('Verified all τ³ message token IDs\n')
             return result
         profile = load_profile('deepseek_v4')
@@ -251,6 +273,8 @@ class PodWorker(Worker):
         self.wait_release()
 
     def restore(self):
+        self.phase_deadline = None
+        self.phase_label = None
         self.update(stage='restore_original')
         self.cleanup()
         if self.restore_required:
@@ -312,6 +336,8 @@ class PodWorker(Worker):
         self.service_health(self.container)
 
     def start_trace(self, ranges):
+        if self.workload == 'tau3_v1.0.1':
+            self.set_phase_budget('trace_on_and_validation', 2 * 3600)
         self.update(stage='trace_on_startup')
         trace_dir = self.directory / 'raw-traces'
         trace_dir.mkdir()
@@ -345,6 +371,7 @@ class PodWorker(Worker):
 
     def stable_workload_baseline(self, pairs, profile):
         """Require a stable diagnostic and complete baseline before trace-on."""
+        self.set_phase_budget('diagnostics_and_trace_off', 4 * 3600)
         diagnostics = self.directory / 'stability-diagnostics'
         diagnostics.mkdir()
         sample = next(p for p in pairs['pairs'] if p['context_target'] == 8192)
@@ -478,11 +505,27 @@ def watchdog(root: Path, run_id: str) -> int:
     worker = PodWorker(root, run_id)
     saved = json.loads((worker.directory / 'worker-identity.json').read_text())
     deadline = time.monotonic() + worker.total_seconds + 1800
+    last_progress = time.monotonic()
+    progress_key = None
+    stalled = False
     while time.monotonic() < deadline:
         state = json.loads((worker.directory / 'status.json').read_text())
         if state['stage'] == 'finished' and state.get('original_service_restored'):
             return 0
         if not same_process(saved):
+            break
+        summary = worker.directory / 'collection-summary.json'
+        attempts = None
+        if summary.exists():
+            attempts = json.loads(summary.read_text()).get('attempted')
+        key = (state.get('stage'), state.get('completed_requests'),
+               tuple(sorted((attempts or {}).items())))
+        if key != progress_key:
+            progress_key = key
+            last_progress = time.monotonic()
+        elif (state.get('stage', '').startswith(('prepare_inputs', 'stability', 'trace_off', 'trace_on'))
+              and time.monotonic() - last_progress > 1800):
+            stalled = True
             break
         time.sleep(15)
     if same_process(saved):
@@ -495,7 +538,8 @@ def watchdog(root: Path, run_id: str) -> int:
     worker.restore_required = (worker.directory / 'restore-required.json').exists()
     worker.experiment = json.loads((worker.directory / 'experiment-process.json').read_text()) if (
         worker.directory / 'experiment-process.json').exists() else None
-    error = 'Worker exited unexpectedly; independent Pod recovery'
+    error = ('Worker made no progress for 30 minutes; independent Pod recovery'
+             if stalled else 'Worker exited unexpectedly; independent Pod recovery')
     try:
         worker.restore()
     except BaseException as failure:

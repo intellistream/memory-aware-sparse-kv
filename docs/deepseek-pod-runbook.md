@@ -49,8 +49,11 @@ independent chains. Each phase attempts 192 requests: two variants and two repet
 per pair. The retail tools and offline BM25 banking search come from the pinned public
 package. The pinned τ³ customer simulator and orchestrator run against the same local
 DeepSeek endpoint as the agent; banking retrieval uses offline BM25 with `top_k=3`.
-The run stops each task at the first complete, eligible native tool result and uses
-the authentic conversation prefix as workload input. It does not run the official τ³ grader.
+The first complete, eligible native tool result remains each task's event anchor.
+Retail conversations continue to natural simulator termination so distinct task
+histories can reach the 8K/32K contexts; banking retrieval stops at that first
+result. Context construction checks actual tokenizer lengths before trace capture.
+It does not run the official τ³ grader.
 The event and control branches use the same token budget within two tokens. Role-bearing
 messages, actual tool results, token IDs, timestamps, source hashes and memory state
 versions are retained. Each banking chain must include a successful single `KB_search`.
@@ -70,6 +73,9 @@ The local guardian synchronizes every checkpoint and final file by SHA-256. At t
 `final-status.json` records separate experiment, output, hash, service and push results.
 Only a complete result passes all gates. Success and failure both produce a lightweight
 Git report/index commit and push; raw logs stay in the local and Pod run directories.
+The τ³ worker has a 12-hour total limit, with shorter collection, trace and CPU
+stage limits. Final file synchronization has its own deadline and transfers
+compressed batches while verifying the original file hashes.
 
 If all 48+48 requests and native rows were archived but a CPU validator needs a
 correction, keep the capture and its failed status unchanged. From a new checked

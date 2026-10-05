@@ -108,7 +108,7 @@ def extract_checked(stream, records, target):
     expected = {safe_relative(r['path']): r for r in records}
     require(len(expected) == len(records), 'Duplicate manifest paths')
     received = set()
-    with tarfile.open(fileobj=stream, mode='r|') as archive:
+    with tarfile.open(fileobj=stream, mode='r|*') as archive:
         for member in archive:
             require(member.isfile() and member.name in expected and member.name not in received, 'Unexpected sync archive member')
             record = expected[member.name]
@@ -127,20 +127,39 @@ def extract_checked(stream, records, target):
     require(received == set(expected), 'Missing sync archive files')
 
 
-def download_records(host, server_directory, records, local_directory):
+def download_records(host, server_directory, records, local_directory, *,
+                     deadline=None, progress=None):
     if not records:
         return
-    paths = [safe_relative(r['path']) for r in records]
     # Trace source copies can contain thousands of files. Send the name list
     # through stdin so neither the local SSH argument nor the remote shell
-    # command crosses ARG_MAX. NUL framing also preserves unusual filenames.
-    command = ('tar -cf - -C ' + shlex.quote(server_directory) +
+    # command crosses ARG_MAX. NUL framing preserves unusual filenames.
+    # Batches keep one failed transfer from restarting the entire inventory.
+    command = ('tar -czf - -C ' + shlex.quote(server_directory) +
                ' --dereference --hard-dereference --null --verbatim-files-from -T -')
-    names = ('\0'.join(paths) + '\0').encode()
-    with tempfile.TemporaryFile() as stream:
-        subprocess.run(ssh_command(host, command), input=names, stdout=stream, timeout=900, check=True)
-        stream.seek(0)
-        extract_checked(stream, records, local_directory)
+    batches, batch, size = [], [], 0
+    for record in records:
+        safe_relative(record['path'])
+        if batch and size + record['size'] > 256 * 1024**2:
+            batches.append(batch)
+            batch, size = [], 0
+        batch.append(record)
+        size += record['size']
+    if batch:
+        batches.append(batch)
+    done = 0
+    for batch in batches:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError('Final artifact synchronization exceeded its deadline')
+        names = ('\0'.join(record['path'] for record in batch) + '\0').encode()
+        with tempfile.TemporaryFile() as stream:
+            subprocess.run(ssh_command(host, command), input=names, stdout=stream,
+                           timeout=3600, check=True)
+            stream.seek(0)
+            extract_checked(stream, batch, local_directory)
+        done += len(batch)
+        if progress:
+            progress(done, len(records))
 
 
 def synchronize_checkpoint(host, server_directory, local_directory, name, digest):
@@ -228,6 +247,7 @@ def qualified_final_status(directory, current):
     tau3 = report.get('workload') == 'tau3_v1.0.1'
     if tau3:
         require({'locality.json', 'tau3-provenance.json', 'event-audit.json',
+                 'context-feasibility.json',
                  'source-branch.bundle', 'branch-provenance.json'} <= paths,
                 'Missing public workload provenance or locality result')
     expected_requests = 4 * len(json.loads((directory / 'pairs.json').read_text())['pairs']) if tau3 else 48
@@ -252,7 +272,8 @@ def guardian(host, remote_directory, directory):
     lock, stop = threading.Lock(), threading.Event()
     launch_path = directory / 'launch.json'
     run_seconds = json.loads(launch_path.read_text()).get('total_timeout_seconds', TOTAL_SECONDS) if launch_path.exists() else TOTAL_SECONDS
-    deadline = time.monotonic() + run_seconds + 1800
+    worker_deadline = time.monotonic() + run_seconds + 1800
+    sync_deadline = None
     def update(**values):
         with lock:
             state.update(values, heartbeat=utc())
@@ -264,7 +285,11 @@ def guardian(host, remote_directory, directory):
     thread = threading.Thread(target=heartbeat, daemon=True)
     thread.start()
     try:
-        while time.monotonic() < deadline:
+        while True:
+            if sync_deadline is None and time.monotonic() >= worker_deadline:
+                raise TimeoutError('Remote worker/recovery deadline exceeded')
+            if sync_deadline is not None and time.monotonic() >= sync_deadline:
+                raise TimeoutError('Final artifact synchronization deadline exceeded')
             current = retry_sync(lambda: status_remote(host, remote_directory))
             write_json(directory / 'status.json', current)
             update(server_stage=current['stage'], server_status=current['status'])
@@ -284,10 +309,15 @@ def guardian(host, remote_directory, directory):
                 if current.get('watchdog_alive'):
                     time.sleep(15)
                     continue
+                sync_deadline = time.monotonic() + 12 * 3600
+                update(sync_stage='final_inventory', sync_deadline_seconds=12 * 3600)
                 records = retry_sync(lambda: final_inventory(host, remote_directory))
                 # Check already downloaded immutable files; download only missing/changed final artifacts.
                 missing = [r for r in records if not (directory / r['path']).is_file() or sha256_file(directory / r['path']) != r['sha256']]
-                retry_sync(lambda: download_records(host, remote_directory, missing, directory))
+                retry_sync(lambda: download_records(
+                    host, remote_directory, missing, directory, deadline=sync_deadline,
+                    progress=lambda done, total: update(sync_stage='final_download',
+                                                        downloaded_files=done, total_files=total)))
                 write_json(directory / 'final-checksums.json', {'files': records})
                 for record in records:
                     require(sha256_file(directory / record['path']) == record['sha256'], 'Final artifact hash mismatch')
@@ -299,6 +329,7 @@ def guardian(host, remote_directory, directory):
                 paths += [directory / r['path'] for r in records if (r['path'].startswith('replay-') and r['path'].endswith('/report.json')) or r['path'].startswith('diagnostics/') or r['path'] in
                     {'report.json', 'report.md', 'status.json', 'layout.json', 'trace-validation.json',
                      'locality.json', 'tau3-provenance.json', 'event-audit.json',
+                     'context-feasibility.json',
                      'replay-64mib/report.json', 'replay-128mib/report.json', 'deployment.json', 'resource-release.json',
                      'restoration.json', 'compressor-contract.json', 'identity.json', 'diagnostics.json', 'selected-config.json',
                      'trace_off-failures.json', 'trace_on-failures.json', 'trace_off-output-differences.json',
@@ -321,7 +352,6 @@ def guardian(host, remote_directory, directory):
                 update(status=current['status'], finished_at=utc(), final_verified_files=len(records), final_git_commit=final_commit)
                 return 0 if qualified else 1
             time.sleep(15)
-        raise TimeoutError('Local guardian total deadline exceeded')
     except BaseException as error:
         update(status='failed', error=str(error), finished_at=utc())
         # Tell the worker to stop at the barrier; SIGTERM also interrupts a request/replay in progress.

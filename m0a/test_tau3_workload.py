@@ -6,11 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from m0a.tau3_locality import analyze
 from m0a.tau3_memory import Memory, digest
 from m0a.tau3_workload import (DOMAINS, EVENTS, TARGETS, complete_fragments,
-                              record_user_incoming, select_episodes)
+                              choose_history, make_pairs, record_user_incoming,
+                              select_episodes)
 
 
 class UserHistoryTests(unittest.TestCase):
@@ -57,17 +59,73 @@ class EpisodeSelectionTests(unittest.TestCase):
         fragments = complete_fragments(messages)
         self.assertEqual([len(fragment) for fragment in fragments], [1, 5])
 
-    def test_selection_preserves_independent_short_and_long_pools(self):
+    def test_selection_keeps_all_distinct_history_sources(self):
         candidates = {domain: [{'domain': domain, 'task_id': f'{i:03d}'} for i in range(50)]
                       for domain in DOMAINS}
-        lengths = {f'{domain}:{i:03d}': 5000 if i < 12 else 9000
-                   for domain in DOMAINS for i in range(50)}
-        selected = select_episodes(candidates, lengths)
+        selected = select_episodes(candidates, {})
         for domain in DOMAINS:
             chosen = [e['task_id'] for e in selected if e in candidates[domain]]
-            self.assertEqual(len(chosen), 48)
-            self.assertEqual(len(set(chosen)), 48)
-            self.assertEqual(chosen[:12], [f'{i:03d}' for i in range(12)])
+            self.assertEqual(chosen, [f'{i:03d}' for i in range(50)])
+
+    def test_grouped_history_uses_each_task_at_most_once(self):
+        options = [('a', [(1400, [{'role': 'user', 'content': 'a-short'}]),
+                           (4000, [{'role': 'user', 'content': 'a-long'}])]),
+                   ('b', [(3000, [{'role': 'user', 'content': 'b'}])])]
+        selected = choose_history(1500, 8192, options)
+        self.assertIsNotNone(selected)
+        messages, task_ids, actual = selected
+        self.assertEqual(task_ids, ['a', 'b'])
+        self.assertEqual(len(task_ids), len(set(task_ids)))
+        self.assertLessEqual(abs(actual - 8192), 1024)
+        self.assertEqual([m['content'] for m in messages], ['a-long', 'b'])
+        self.assertIsNone(choose_history(1655, 8192,
+                          [(str(i), [(200, [{'role': 'user', 'content': str(i)}])])
+                           for i in range(5)]))
+
+    def test_stop_marker_is_not_history_fragment(self):
+        messages = [{'role': 'system', 'content': 'policy'},
+                    {'role': 'assistant', 'content': 'hello'},
+                    {'role': 'assistant', 'content': '###STOP###'}]
+        self.assertEqual(complete_fragments(messages), [messages[1:2]])
+
+    def test_pair_builder_covers_all_cells_with_distinct_long_histories(self):
+        episodes = []
+        for domain in DOMAINS:
+            for index in range(60):
+                task_id = f'{index:03d}'
+                call_id = f'{domain}-{task_id}'
+                messages = [{'role': 'system', 'content': 'policy', '_tokens': 1000},
+                            {'role': 'user', 'content': 'ask', '_tokens': 50},
+                            {'role': 'assistant', 'content': None, '_tokens': 300,
+                             'tool_calls': [{'id': call_id, 'type': 'function',
+                                             'function': {'name': 'KB_search', 'arguments': '{}'}}]},
+                            {'role': 'tool', 'tool_call_id': call_id,
+                             'content': 'result', '_tokens': 1200}]
+                event = {'eligible': True, 'call_id': call_id, 'result': 'result',
+                         'tool_name': 'KB_search', 'started_ns': 1, 'finished_ns': 2,
+                         'assistant_index': 2}
+                episodes.append({'domain': domain, 'task_id': task_id,
+                                 'messages': messages, 'events': [event]})
+
+        def tokens(messages):
+            return list(range(sum(message.get('_tokens', 10) for message in messages)))
+
+        def match(prefix, event, control):
+            size = len(tokens(prefix + event))
+            return list(range(size)), [0, -1, *range(2, size)], control
+
+        with tempfile.TemporaryDirectory() as name, \
+             patch('m0a.tau3_workload.api_tokens', side_effect=tokens), \
+             patch('m0a.tau3_workload.match_control', side_effect=match):
+            pairs = make_pairs(episodes, Path(name), 'tokenizer-hash')['pairs']
+            self.assertEqual(len(pairs), 48)
+            for domain in DOMAINS:
+                source = [pair for pair in pairs if pair['workload_id'].endswith(domain)]
+                self.assertEqual(len({pair['episode_id'] for pair in source}), 24)
+                self.assertGreaterEqual(len({task_id for pair in source
+                                             for task_id in pair['history_task_ids']}), 48)
+                self.assertTrue(all(len(pair['history_task_ids']) ==
+                                    len(set(pair['history_task_ids'])) for pair in source))
 
 
 class MemoryAuditTests(unittest.TestCase):

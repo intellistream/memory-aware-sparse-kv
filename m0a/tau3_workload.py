@@ -93,11 +93,11 @@ def record_user_incoming(incoming, state) -> None:
         state.messages.append(incoming)
 
 
-def collect_episode(domain: str, task, path: Path, *, max_steps: int = 40) -> dict:
+def collect_episode(domain: str, task, path: Path, *, max_steps: int = 60) -> dict:
     """Run the pinned τ³ half-duplex protocol through the local DeepSeek API.
 
-    Stop at the first complete, eligible agent tool result.  The resulting
-    conversation is an authentic task prefix, not an official τ³ score.
+    Keep the first eligible tool result as the anchor. Retail continues until
+    the pinned simulator ends naturally so its longer history can be reused.
     """
     from tau2.agent.llm_agent import LLMAgent
     from tau2.data_model.message import AssistantMessage, MultiToolMessage, ToolCall, ToolMessage, UserMessage
@@ -191,19 +191,25 @@ def collect_episode(domain: str, task, path: Path, *, max_steps: int = 40) -> di
         user = AuditedUser(llm='dsv4', instructions=task.user_scenario,
                            tools=user_tools or None)
         orchestrator = Orchestrator(domain=domain, agent=agent, user=user,
-                                    environment=env, task=task, max_steps=max_steps,
+                                    environment=env, task=task,
+                                    max_steps=max_steps if domain == 'retail' else 40,
                                     max_errors=3, seed=0, timeout=240)
         orchestrator.initialize()
         while not orchestrator.done:
             orchestrator.step()
             orchestrator._check_termination()
-            if any(event['eligible'] for event in events):
+            if domain != 'retail' and any(event['eligible'] for event in events):
                 incoming = orchestrator.message
                 if isinstance(incoming, MultiToolMessage):
                     orchestrator.agent_state.messages.extend(incoming.tool_messages)
                 elif isinstance(incoming, ToolMessage):
                     orchestrator.agent_state.messages.append(incoming)
                 break
+        termination = (orchestrator.termination_reason.name
+                       if orchestrator.termination_reason else 'FIRST_ELIGIBLE_TOOL')
+        if domain == 'retail':
+            require(termination in {'AGENT_STOP', 'USER_STOP'},
+                    f'Retail conversation did not end naturally: {termination}')
         messages = to_litellm_messages(orchestrator.agent_state.system_messages +
                                        orchestrator.agent_state.messages)
     require(any(e['eligible'] for e in events),
@@ -216,7 +222,8 @@ def collect_episode(domain: str, task, path: Path, *, max_steps: int = 40) -> di
             'Eligible tool call missing from agent conversation')
     return {'domain': domain, 'task_id': task.id, 'messages': messages, 'events': events,
             'retrieval': 'offline_bm25_top_k_3' if domain == 'banking_knowledge' else None,
-            'protocol': 'tau3_v1.0.1_user_simulator_orchestrator'}
+            'protocol': 'tau3_v1.0.1_user_simulator_orchestrator',
+            'termination_reason': termination}
 
 
 def memory_event(kind: str, memory: Memory, task_id: str) -> dict:
@@ -295,96 +302,164 @@ def complete_fragments(messages: list[dict]) -> list[list[dict]]:
             pending.update(call['id'] for call in message.get('tool_calls') or [])
         elif message['role'] == 'tool':
             pending.discard(message['tool_call_id'])
-        if not pending and message['role'] in ('assistant', 'tool'):
+        if (not pending and message['role'] in ('assistant', 'tool') and
+                '###STOP###' not in (message.get('content') or '')):
             fragments.append(messages[1:index + 1])
     return fragments
 
 
 def select_episodes(candidates: dict[str, list[dict]], lengths: dict[str, int]) -> list[dict]:
+    del lengths  # Full length is not a proxy for usable independent history.
+    require(all(len(candidates[domain]) >= 48 for domain in DOMAINS),
+            'Fewer than 48 eligible independent tasks in a domain')
+    return [e for domain in DOMAINS
+            for e in sorted(candidates[domain], key=lambda item: item['task_id'])]
+
+
+def choose_history(base: int, target: int,
+                   options: list[tuple[str, list[tuple[int, list[dict]]]]]
+                   ) -> tuple[list[dict], list[str], int] | None:
+    """Grouped subset sum: at most one complete fragment from each task."""
+    limit = target + TOKEN_TOLERANCE - base
+    if limit < 0:
+        return None
+    mask = (1 << (limit + 1)) - 1
+    states = [1]
+    for _, fragments in options:
+        before = states[-1]
+        after = before
+        for length, _ in fragments:
+            if 0 < length <= limit:
+                after |= before << length
+        states.append(after & mask)
+    low = max(0, target - TOKEN_TOLERANCE - base)
+    feasible = [value for value in range(low, limit + 1)
+                if (states[-1] >> value) & 1]
+    if not feasible:
+        return None
+    remaining = min(feasible, key=lambda value: (abs(base + value - target), value))
     selected = []
-    for domain in DOMAINS:
-        ordered = sorted(candidates[domain], key=lambda e: (lengths[domain + ':' + e['task_id']], e['task_id']))
-        short = [e for e in ordered if lengths[domain + ':' + e['task_id']] <= 8192 - TOKEN_TOLERANCE]
-        medium = [e for e in ordered if lengths[domain + ':' + e['task_id']] <= 32768 - TOKEN_TOLERANCE]
-        require(len(short) >= 12 and len(medium) >= 48,
-                f'Insufficient {domain} episode lengths: {len(short)} fit 8K, {len(medium)} fit 32K')
-        first = short[:12]
-        used = {e['task_id'] for e in first}
-        selected.extend(first + [e for e in medium if e['task_id'] not in used][:36])
-    return selected
+    for index in range(len(options) - 1, -1, -1):
+        if (states[index] >> remaining) & 1:
+            continue
+        task_id, fragments = options[index]
+        choice = next(((length, fragment) for length, fragment in fragments
+                       if length <= remaining and (states[index] >> (remaining - length)) & 1), None)
+        require(choice is not None, 'Grouped history reconstruction failed')
+        selected.append((task_id, choice[1]))
+        remaining -= choice[0]
+    require(remaining == 0, 'Grouped history reconstruction left a gap')
+    selected.reverse()
+    return ([message for _, fragment in selected for message in fragment],
+            [task_id for task_id, _ in selected], base + min(feasible, key=lambda value:
+             (abs(base + value - target), value)))
 
 
 def make_pairs(episodes: list[dict], output: Path, tokenizer_sha256: str) -> dict:
-    require(len(episodes) == 96, 'Expected 48 real episodes per domain')
+    require(len(episodes) >= 96, 'Expected at least 48 real episodes per domain')
     by_domain = {d: [e for e in episodes if e['domain'] == d] for d in DOMAINS}
-    pairs, audit = [], []
+    pairs, audit, feasibility = [], [], []
     for domain in DOMAINS:
         corpus = by_domain[domain]
-        require(len(corpus) == 48, 'Missing domain episodes')
-        fragments = {e['task_id']: complete_fragments(e['messages']) for e in corpus}
-        policy_lengths = {e['task_id']: len(api_tokens(e['messages'][:1])) for e in corpus}
-        fragment_lengths = {e['task_id']: [(len(api_tokens(e['messages'][:1] + fragment))
-                                            - policy_lengths[e['task_id']], fragment)
-                                           for fragment in fragments[e['task_id']]] for e in corpus}
-        for index, episode in enumerate(corpus[:24]):
-            kind = EVENTS[(index // 2) % 6]
-            target = TARGETS[(index // 12) % 2]
-            chain = index % 2
-            memory = Memory(episode['task_id'])
-            event_tail, control_tail, event_source = paired_tail(episode, kind, memory)
-            # Keep the anchor's system policy and its real local conversation
-            # immediately before the observed event. Older complete episodes
-            # form prior turns; no tool result is substituted in the event arm.
-            prefix = episode['messages'][:1]
-            if kind == 'tool_call':
-                anchor_prefix = episode['messages'][1:event_source['assistant_index']]
-            elif kind == 'tool_result':
-                anchor_prefix = episode['messages'][1:event_source['assistant_index'] + 1]
-            else:
-                anchor_prefix = episode['messages'][1:]
-            pool = range(0, 12) if target == 8192 else range(12, 48)
-            remaining = [e for j, e in enumerate(corpus) if j in pool and j % 2 == chain and
-                         e['task_id'] != episode['task_id']]
-            history_task_ids = [episode['task_id']]
-            current = len(api_tokens(prefix + anchor_prefix + event_tail))
-            while current < target - TOKEN_TOLERANCE and remaining:
-                gap = target - current
-                fitting = [(length, e, fragment) for e in remaining
-                           for length, fragment in fragment_lengths[e['task_id']]
-                           if length <= gap + TOKEN_TOLERANCE // 2]
-                if not fitting:
-                    break
-                _, previous, fragment = max(fitting, key=lambda item: item[0])
-                remaining.remove(previous)
-                prefix.extend(fragment)
-                history_task_ids.append(previous['task_id'])
-                current = len(api_tokens(prefix + anchor_prefix + event_tail))
-            prefix.extend(anchor_prefix)
-            event_ids, control_ids, matched = match_control(prefix, event_tail, control_tail)
-            require(abs(len(event_ids)-target) <= TOKEN_TOLERANCE and
-                    abs(len(control_ids)-target) <= TOKEN_TOLERANCE,
-                    f'Context target unavailable for {domain}/{episode["task_id"]}/{kind}/{target}')
-            boundary = next((i for i, (a, b) in enumerate(zip(event_ids, control_ids)) if a != b), -1)
-            require(boundary > 0 and boundary < min(len(event_ids), len(control_ids)),
-                    'No usable event/control token boundary')
-            pair_id = f'{domain}_{kind}_{target}_{chain}'
-            pair = {'pair_id': pair_id, 'workload_id': 'tau3_v1.0.1_' + domain,
-                    'episode_id': episode['task_id'], 'source_trace_id': domain + ':' + episode['task_id'],
-                    'context_target': target, 'event_type': kind, 'event_source': event_source,
-                    'history_task_ids': history_task_ids}
-            for variant, tail, ids in (('event', event_tail, event_ids), ('control', matched, control_ids)):
-                pair[variant] = {'prompt': json.dumps(prefix + tail, ensure_ascii=False),
-                                 'messages': prefix + tail, 'boundary_position': boundary,
-                                 'prompt_tokens_expected': len(ids),
-                                 'prompt_token_ids_sha256_expected': sha_ids(ids),
-                                 'prompt_token_ids': ids}
-            pairs.append(pair)
-            audit.append({'pair_id': pair_id, 'domain': domain, 'task_id': episode['task_id'],
-                          'event_type': kind, 'context_target': target, 'chain': chain,
-                          'event_source': event_source, 'memory_audit': memory.audit,
-                          'history_task_ids': history_task_ids,
-                          'event_tokens': len(event_ids), 'control_tokens': len(control_ids),
-                          'boundary_position': boundary})
+        require(len(corpus) >= 48 and len({e['task_id'] for e in corpus}) == len(corpus),
+                'Missing or duplicate independent domain episodes')
+        require(len({e['messages'][0]['content'] for e in corpus}) == 1,
+                'Domain system policy changed between episodes')
+        policy = corpus[0]['messages'][:1]
+        policy_length = len(api_tokens(policy))
+        fragment_lengths = {}
+        for episode in corpus:
+            options = [(len(api_tokens(policy + fragment)) - policy_length, fragment)
+                       for fragment in complete_fragments(episode['messages'])]
+            fragment_lengths[episode['task_id']] = sorted(
+                {length: (length, fragment) for length, fragment in options if length > 0}.values(),
+                key=lambda item: item[0])
+        pools = {chain: corpus[chain::2] for chain in (0, 1)}
+        used_anchors = set()
+        for target in TARGETS:
+            for kind in EVENTS:
+                for chain in (0, 1):
+                    pool = pools[chain]
+                    candidates = []
+                    for episode in pool:
+                        if episode['task_id'] in used_anchors:
+                            continue
+                        memory = Memory(episode['task_id'])
+                        event_tail, control_tail, source = paired_tail(episode, kind, memory)
+                        if kind == 'tool_call':
+                            anchor_prefix = episode['messages'][1:source['assistant_index']]
+                        elif kind == 'tool_result':
+                            anchor_prefix = episode['messages'][1:source['assistant_index'] + 1]
+                        else:
+                            anchor_prefix = episode['messages'][1:]
+                        base = len(api_tokens(policy + anchor_prefix + event_tail))
+                        if base <= target + TOKEN_TOLERANCE:
+                            candidates.append((base, episode['task_id'], episode, memory,
+                                               event_tail, control_tail, source, anchor_prefix))
+                    candidates.sort(key=lambda item: (item[0], item[1]))
+                    chosen = None
+                    maximum = 0
+                    for (base, _, episode, memory, event_tail, control_tail,
+                         event_source, anchor_prefix) in candidates:
+                        remaining = [e for e in pool if e['task_id'] != episode['task_id']]
+                        rotation = (len(pairs) * 7) % len(remaining)
+                        remaining = remaining[rotation:] + remaining[:rotation]
+                        options = [(e['task_id'], fragment_lengths[e['task_id']]) for e in remaining]
+                        maximum = max(maximum, base + sum(max((length for length, _ in fragments),
+                                                              default=0) for _, fragments in options))
+                        history = choose_history(base, target, options)
+                        if history is not None:
+                            chosen = (episode, memory, event_tail, control_tail, event_source,
+                                      anchor_prefix, history, base)
+                            break
+                    if chosen is None:
+                        feasibility.append({'domain': domain, 'event_type': kind,
+                                            'context_target': target, 'chain': chain,
+                                            'status': 'unavailable', 'candidate_anchors': len(candidates),
+                                            'maximum_estimated_tokens': maximum})
+                        write_json(output / 'context-feasibility.json', feasibility)
+                        raise ValueError(f'Context target unavailable for {domain}/{kind}/{target}/{chain}')
+                    (episode, memory, event_tail, control_tail, event_source,
+                     anchor_prefix, (history_messages, prior_ids, estimate), base) = chosen
+                    used_anchors.add(episode['task_id'])
+                    history_task_ids = [episode['task_id']] + prior_ids
+                    prefix = policy + history_messages + anchor_prefix
+                    feasibility.append({'domain': domain, 'event_type': kind,
+                                        'context_target': target, 'chain': chain,
+                                        'status': 'selected', 'anchor_task_id': episode['task_id'],
+                                        'history_task_ids': prior_ids, 'base_tokens': base,
+                                        'estimated_tokens': estimate,
+                                        'candidate_anchors': len(candidates)})
+                    write_json(output / 'context-feasibility.json', feasibility)
+                    event_ids, control_ids, matched = match_control(prefix, event_tail, control_tail)
+                    require(abs(len(event_ids)-target) <= TOKEN_TOLERANCE and
+                            abs(len(control_ids)-target) <= TOKEN_TOLERANCE,
+                            f'Context target unavailable for {domain}/{episode["task_id"]}/{kind}/{target}')
+                    boundary = next((i for i, (a, b) in enumerate(zip(event_ids, control_ids)) if a != b), -1)
+                    require(boundary > 0 and boundary < min(len(event_ids), len(control_ids)),
+                            'No usable event/control token boundary')
+                    pair_id = f'{domain}_{kind}_{target}_{chain}'
+                    pair = {'pair_id': pair_id, 'workload_id': 'tau3_v1.0.1_' + domain,
+                            'episode_id': episode['task_id'], 'source_trace_id': domain + ':' + episode['task_id'],
+                            'context_target': target, 'event_type': kind, 'event_source': event_source,
+                            'history_task_ids': history_task_ids}
+                    for variant, tail, ids in (('event', event_tail, event_ids), ('control', matched, control_ids)):
+                        pair[variant] = {'prompt': json.dumps(prefix + tail, ensure_ascii=False),
+                                         'messages': prefix + tail, 'boundary_position': boundary,
+                                         'prompt_tokens_expected': len(ids),
+                                         'prompt_token_ids_sha256_expected': sha_ids(ids),
+                                         'prompt_token_ids': ids}
+                    pairs.append(pair)
+                    audit.append({'pair_id': pair_id, 'domain': domain, 'task_id': episode['task_id'],
+                                  'event_type': kind, 'context_target': target, 'chain': chain,
+                                  'event_source': event_source, 'memory_audit': memory.audit,
+                                  'history_task_ids': history_task_ids,
+                                  'event_tokens': len(event_ids), 'control_tokens': len(control_ids),
+                                  'boundary_position': boundary})
+        used = {task_id for row in audit if row['domain'] == domain
+                for task_id in row['history_task_ids']}
+        require(len(used) >= 48,
+                f'Fewer than 48 independent {domain} tasks used in pair histories: {len(used)}')
     result = {'schema_version': 1, 'tokenizer_json_sha256': tokenizer_sha256,
               'workload': 'tau3_v1.0.1', 'pairs': pairs}
     validate_pair_set(result)
@@ -398,7 +473,6 @@ def collect(tau_root: Path, output: Path, tokenizer_sha256: str) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / 'tau3-provenance.json', {k: v for k, v in provenance.items() if k != 'tasks'})
     candidates = {domain: [] for domain in DOMAINS}
-    lengths = {}
     rejected = []
     attempted = {domain: 0 for domain in DOMAINS}
     for domain in DOMAINS:
@@ -408,7 +482,6 @@ def collect(tau_root: Path, output: Path, tokenizer_sha256: str) -> dict:
             try:
                 episode = collect_episode(domain, task, path)
                 candidates[domain].append(episode)
-                lengths[domain + ':' + task.id] = len(api_tokens(episode['messages']))
             except (ValueError, RuntimeError, KeyError, TypeError) as error:
                 rejected.append({'domain': domain, 'task_id': task.id, 'reason': str(error),
                                  'episode_log': str(path)})
@@ -418,7 +491,7 @@ def collect(tau_root: Path, output: Path, tokenizer_sha256: str) -> dict:
                     'eligible': {d: len(candidates[d]) for d in DOMAINS},
                     'rejected': len(rejected), 'banking_retrieval': 'bm25_top_k_3',
                     'simulator': 'tau3_v1.0.1_on_local_dsv4'})
-    episodes = select_episodes(candidates, lengths)
+    episodes = select_episodes(candidates, {})
     write_json(output / 'episodes.json', episodes)
     return make_pairs(episodes, output, tokenizer_sha256)
 
