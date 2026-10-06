@@ -1,0 +1,45 @@
+{
+  "run_id": "deepseek_20261005T134845Z_3eb88906",
+  "finished_at": "2026-10-06T01:50:39.667176+00:00",
+  "experiment_conclusion": "not_qualified",
+  "output_acceptance": "failed",
+  "hash_sync": "verified",
+  "service_health": "verified",
+  "push": "pending",
+  "complete_acceptance": false,
+  "guardian_exit_code": 1,
+  "errors": [],
+  "manifest_sha256": "273c88eda13ee1d2991c8e5f3cd15bab1c68f1ea2646696d8d2e149773328082",
+  "verified_files": 1875,
+  "service": {
+    "healthy": true,
+    "process_identity": {
+      "pid": 631336,
+      "start_ticks": 624429940,
+      "pgrp": 631336,
+      "cmdline": "/usr/local/python3.12.13/bin/python3 /usr/local/python3.12.13/bin/vllm serve /models/DeepSeek-V4-Flash-W8A8 --host 127.0.0.1 --port 8900 --served-model-name dsv4 --tensor-parallel-size 8 --data-parallel-size 1 --enable-expert-parallel --quantization ascend --tokenizer-mode deepseek_v4 --tool-call-parser deepseek_v4 --reasoning-parser deepseek_v4 --enable-auto-tool-choice --no-enable-prefix-caching --max-model-len 133120 --max-num-batched-tokens 8192 --max-num-seqs 32 --gpu-memory-utilization 0.90 --block-size 128 --model-loader-extra-config {\"enable_multithread_load\":true,\"num_threads\":128} --speculative-config {\"num_speculative_tokens\":1,\"method\":\"mtp\",\"enforce_eager\":true} --compilation-config {\"cudagraph_mode\":\"FULL_DECODE_ONLY\"} --additional-config {\"ascend_compilation_config\":{\"enable_npugraph_ex\":true,\"enable_static_kernel\":false},\"enable_cpu_binding\":true,\"enable_dsa_cp\":true,\"enable_flashcomm1\":true,\"multistream_overlap_shared_expert\":true}"
+    },
+    "models": [
+      [
+        "dsv4",
+        "/models/DeepSeek-V4-Flash-W8A8"
+      ]
+    ],
+    "config_unchanged": true,
+    "eight_npu_healthy": true,
+    "hbm_used_mb": {
+      "0": 61095,
+      "1": 60939,
+      "2": 60913,
+      "3": 60913,
+      "4": 60921,
+      "5": 60918,
+      "6": 60919,
+      "7": 60921
+    },
+    "owned_processes_remaining": []
+  },
+  "local_run_directory": "/home/ruan/memecho/memory-aware-sparse-kv/m0a/runs/deepseek_20261005T134845Z_3eb88906",
+  "remote_run_directory": "/root/memory-aware-sparse-kv/m0a/runs/deepseek_20261005T134845Z_3eb88906",
+  "report_sha256": "60bedf858af17b24278a2040902de6c068caa12a30eb6838668c523d5617862d"
+}

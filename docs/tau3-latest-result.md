@@ -1,11 +1,11 @@
 # τ³ workload validation
 
-Run: `deepseek_20261005T014954Z_1db56e05`  
+Run: `deepseek_20261005T134845Z_3eb88906`  
 Complete acceptance: `False`  
 Experiment: `not_qualified`  
 Output: `failed`  
 Hash synchronization: `verified`  
 Service health: `verified`  
-Push: `verified`
+Push: `pending`
 
 The local and Pod raw artifacts are linked by the manifest SHA-256 in the index. Offline replay is not an online ECHO performance measurement.
