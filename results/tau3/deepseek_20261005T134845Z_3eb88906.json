@@ -5,7 +5,7 @@
   "output_acceptance": "failed",
   "hash_sync": "verified",
   "service_health": "verified",
-  "push": "pending",
+  "push": "verified",
   "complete_acceptance": false,
   "guardian_exit_code": 1,
   "errors": [],
@@ -39,6 +39,7 @@
     },
     "owned_processes_remaining": []
   },
+  "initial_push_commit": "10123181cc8b3a95139a4f4b5cf0fe1b8f680956",
   "local_run_directory": "/home/ruan/memecho/memory-aware-sparse-kv/m0a/runs/deepseek_20261005T134845Z_3eb88906",
   "remote_run_directory": "/root/memory-aware-sparse-kv/m0a/runs/deepseek_20261005T134845Z_3eb88906",
   "report_sha256": "60bedf858af17b24278a2040902de6c068caa12a30eb6838668c523d5617862d"
