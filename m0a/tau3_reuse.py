@@ -38,8 +38,11 @@ def source_records(source: Path) -> dict:
                 f'Insufficient independent source tasks in {domain}')
     names = sorted(name for name in indexed if name.startswith('episode-') and name.endswith('.jsonl'))
     require(names and set(METADATA) <= set(indexed), 'Source input inventory incomplete')
-    require(all(f'episode-{e["domain"]}-{e["task_id"]}.jsonl' in names for e in episodes),
-            'Eligible episode log missing from source inventory')
+    rejected = json.loads((source / 'rejected-episodes.json').read_text())
+    expected_logs = {f'episode-{e["domain"]}-{e["task_id"]}.jsonl' for e in episodes}
+    expected_logs.update(Path(row['episode_log']).name for row in rejected)
+    require(set(names) == expected_logs == {p.name for p in source.glob('episode-*.jsonl')},
+            'Complete episode log set differs from source inventory')
     rows = []
     for name in (*METADATA, *names):
         row = indexed[name]

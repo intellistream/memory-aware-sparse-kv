@@ -139,10 +139,29 @@ class SynchronizationTests(unittest.TestCase):
                 observed.append('download')
 
             with patch('scripts.launch_single_npu_validation.remote', side_effect=remote), \
+                 patch('scripts.launch_single_npu_validation.status_remote',
+                       return_value={'stage': 'inputs_sync', 'worker_alive': True}), \
                  patch('scripts.launch_single_npu_validation.download_records', side_effect=download):
                 synchronize_checkpoint('host', '/remote', local, '01-inputs', digest(manifest))
             self.assertEqual(observed, ['download', 'remote_ack'])
             self.assertTrue((local / 'acks/01-inputs.json').exists())
+
+    def test_worker_exit_during_transfer_does_not_create_ack(self):
+        with tempfile.TemporaryDirectory(prefix='deepseek_') as name:
+            local = Path(name)
+            payload = b'complete'
+            record = {'path': 'input.txt', 'size': len(payload), 'sha256': digest(payload)}
+            manifest = json.dumps({'run_id': local.name, 'files': [record]}).encode()
+
+            def download(_host, _server, records, directory, **_kwargs):
+                (Path(directory) / records[0]['path']).write_bytes(payload)
+
+            with patch('scripts.launch_single_npu_validation.remote', return_value=manifest), \
+                 patch('scripts.launch_single_npu_validation.status_remote',
+                       return_value={'stage': 'finished', 'worker_alive': False}), \
+                 patch('scripts.launch_single_npu_validation.download_records', side_effect=download):
+                synchronize_checkpoint('host', '/remote', local, '01-inputs', digest(manifest))
+            self.assertFalse((local / 'acks/01-inputs.json').exists())
 
 
 if __name__ == '__main__':

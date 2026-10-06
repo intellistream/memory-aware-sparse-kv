@@ -210,6 +210,11 @@ def synchronize_checkpoint(host, server_directory, local_directory, name, digest
     ack = {'run_id': manifest['run_id'], 'manifest_sha256': digest, 'files': records, 'verified_at': utc()}
     ack_path = str(PurePosixPath(server_directory) / 'acks' / (name + '.json'))
     if write_ack:
+        event('ack_preflight')
+        latest = status_remote(host, server_directory)
+        if latest['stage'] == 'finished' or not latest['worker_alive']:
+            write_ack = False
+    if write_ack:
         event('ack_write_start')
         try:
             remote(host, 'import pathlib,json\np=pathlib.Path(' + repr(ack_path) + ')\np.parent.mkdir(parents=True,exist_ok=True)\n'
