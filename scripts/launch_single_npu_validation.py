@@ -93,7 +93,7 @@ def archive_code(directory, paths, *, bundle_name='implementation.bundle', prove
     return commit
 
 
-def transfer_files(host, remote_directory, files, *, destination_prefix=''):
+def transfer_files(host, remote_directory, files, *, destination_prefix='', timeout=180):
     """Upload an explicit code list. No repository deletion or broad synchronization."""
     with tempfile.TemporaryFile() as stream:
         with tarfile.open(fileobj=stream, mode='w') as archive:
@@ -101,7 +101,7 @@ def transfer_files(host, remote_directory, files, *, destination_prefix=''):
                 archive.add(source, arcname=destination_prefix + safe_relative(relative), recursive=False)
         stream.seek(0)
         command = 'tar -xf - -C ' + shlex.quote(remote_directory)
-        subprocess.run(ssh_command(host, command), stdin=stream, timeout=180, check=True)
+        subprocess.run(ssh_command(host, command), stdin=stream, timeout=timeout, check=True)
 
 
 def extract_checked(stream, records, target):
