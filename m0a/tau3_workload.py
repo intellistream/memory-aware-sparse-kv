@@ -374,12 +374,15 @@ def make_pairs(episodes: list[dict], output: Path, tokenizer_sha256: str) -> dic
             fragment_lengths[episode['task_id']] = sorted(
                 {length: (length, fragment) for length, fragment in options if length > 0}.values(),
                 key=lambda item: item[0])
-        pools = {chain: corpus[chain::2] for chain in (0, 1)}
+        ordered = sorted(corpus, key=lambda item: item['task_id'])
+        pools = {target: {chain: partition[chain::2] for chain in (0, 1)}
+                 for target, partition in ((TARGETS[0], ordered[:28]),
+                                           (TARGETS[1], ordered[28:]))}
         used_anchors = set()
         for target in TARGETS:
             for kind in EVENTS:
                 for chain in (0, 1):
-                    pool = pools[chain]
+                    pool = pools[target][chain]
                     candidates = []
                     for episode in pool:
                         if episode['task_id'] in used_anchors:
@@ -463,6 +466,24 @@ def make_pairs(episodes: list[dict], output: Path, tokenizer_sha256: str) -> dic
     result = {'schema_version': 1, 'tokenizer_json_sha256': tokenizer_sha256,
               'workload': 'tau3_v1.0.1', 'pairs': pairs}
     validate_pair_set(result)
+    require(len(pairs) == 48, 'τ³ pair count must be 48')
+    for domain in DOMAINS:
+        domain_pairs = [pair for pair in pairs if pair['workload_id'].endswith(domain)]
+        require(len({task for pair in domain_pairs for task in pair['history_task_ids']}) >= 48,
+                f'Insufficient independent {domain} task histories')
+        for target in TARGETS:
+            selected = [pair for pair in domain_pairs if pair['context_target'] == target]
+            require(len(selected) == 12 and {pair['event_type'] for pair in selected} == set(EVENTS),
+                    f'Incomplete {domain}/{target} event coverage')
+            for kind in EVENTS:
+                chains = [pair for pair in selected if pair['event_type'] == kind]
+                require(len(chains) == 2 and not set(chains[0]['history_task_ids']) &
+                        set(chains[1]['history_task_ids']), 'τ³ chains share a task')
+        training = {task for pair in domain_pairs if pair['context_target'] == TARGETS[0]
+                    for task in pair['history_task_ids']}
+        evaluation = {task for pair in domain_pairs if pair['context_target'] == TARGETS[1]
+                      for task in pair['history_task_ids']}
+        require(not training & evaluation, f'8K/32K task leakage in {domain}')
     write_json(output / 'pairs.json', result)
     write_json(output / 'event-audit.json', audit)
     return result
@@ -502,8 +523,13 @@ def main() -> int:
     parser.add_argument('--tau-root', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--tokenizer-sha256', required=True)
+    parser.add_argument('--reuse-inputs', type=Path)
     args = parser.parse_args()
-    result = collect(args.tau_root, args.output, args.tokenizer_sha256)
+    if args.reuse_inputs:
+        from .tau3_reuse import regenerate
+        result = regenerate(args.reuse_inputs, args.output, args.tau_root, args.tokenizer_sha256)
+    else:
+        result = collect(args.tau_root, args.output, args.tokenizer_sha256)
     print(json.dumps({'pairs': len(result['pairs']), 'output': str(args.output)}))
     return 0
 

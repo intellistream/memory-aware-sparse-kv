@@ -35,6 +35,8 @@ class PodWorker(Worker):
         self.model_dir = Path(launch['model_dir'])
         self.workload = launch.get('workload', 'synthetic')
         self.total_seconds = launch.get('total_timeout_seconds', TOTAL_SECONDS)
+        self.checkpoint_sync_seconds = 3600 if self.workload == 'tau3_v1.0.1' else 900
+        self.reuse_source_run = launch.get('reuse_tau3_run')
         self.tau_root = Path(launch['tau_root']) if self.workload == 'tau3_v1.0.1' else None
         self.service = SupervisorService(self.root, self.model_dir)
         self.env = dict(os.environ)
@@ -69,6 +71,9 @@ class PodWorker(Worker):
                           ('tau3-provenance.json', 'event-audit.json', 'episodes.json',
                            'context-feasibility.json')]
                 extra += list(self.directory.glob('episode-*.jsonl'))
+                if self.reuse_source_run:
+                    extra += [p for p in (self.directory / 'source-inputs').rglob('*') if p.is_file()]
+                    extra += [self.directory / 'source-lineage.json']
         elif stage == 'report' and self.workload == 'tau3_v1.0.1':
             locality = self.directory / 'locality.json'
             if locality.exists():
@@ -212,8 +217,11 @@ class PodWorker(Worker):
             tokenizer_hash = inventory['metadata']['tokenizer.json']['sha256']
             executable = self.root / 'runtime/tau3-v1.0.1-venv/bin/python'
             require(executable.is_file(), 'Pinned τ³ environment missing')
-            self.command([str(executable), '-m', 'm0a.tau3_workload', '--tau-root', str(self.tau_root),
-                          '--output', str(self.directory), '--tokenizer-sha256', tokenizer_hash],
+            command = [str(executable), '-m', 'm0a.tau3_workload', '--tau-root', str(self.tau_root),
+                       '--output', str(self.directory), '--tokenizer-sha256', tokenizer_hash]
+            if self.reuse_source_run:
+                command += ['--reuse-inputs', str(self.directory / 'source-inputs')]
+            self.command(command,
                          timeout=4 * 3600, output=self.directory / 'tau3-collection.log',
                          env=dict(os.environ, PYTHONPATH=str(self.code_root)))
             result = json.loads((self.directory / 'pairs.json').read_text())

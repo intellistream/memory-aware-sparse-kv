@@ -19,6 +19,7 @@ sys.path.insert(0,str(ROOT))
 from m0a.deepseek_validation import IMAGE, IMAGE_ID, TOTAL_SECONDS, utc, write_json
 from m0a.contracts import sha256_file
 from m0a.tau3_bundle import build as build_tau3_bundles
+from m0a.tau3_reuse import build_archive as build_tau3_source_archive
 from m0a.working_set import require
 from scripts.launch_single_npu_validation import (remote, transfer_files, archive_code, detached_process,
                                                  alive, guardian, status_remote, retry_sync)
@@ -77,6 +78,7 @@ def launch(args):
           'validation_mode':args.validation_mode,'runtime':args.runtime,'model_dir':str(args.model_dir) if args.model_dir else None,
           'execution_available':args.runtime=='pod' and args.validation_mode=='trace-replay',
           'workload':args.workload,
+          'reuse_tau3_run':args.reuse_tau3_run,
           'tau_root':str(PurePosixPath(args.remote_root)/'runtime/tau2-v1.0.1')
               if args.workload=='tau3_v1.0.1' else None}
     plan.update(diagnostic_only=getattr(args,'diagnostic_only',False),diagnostic_requests_per_candidate=20,
@@ -112,6 +114,9 @@ def launch_pod(args, plan, directory, remote_directory):
     """Transfer a checked source snapshot, start the service, then detach the worker."""
     previous_run_barrier(args)
     directory.mkdir(parents=True,exist_ok=False)
+    source_archive = (build_tau3_source_archive(ROOT/'m0a/runs'/args.reuse_tau3_run, directory)
+                      if args.reuse_tau3_run else None)
+    plan['source_archive'] = source_archive
     write_json(directory/'launch.json',plan)
     bundles = (build_tau3_bundles(directory, ROOT/'m0a/tau3-requirements.txt',
                                  tau_source=Path('/tmp/memecho-tau2-bench'),
@@ -123,7 +128,8 @@ def launch_pod(args, plan, directory, remote_directory):
     files=deployment_files()
     commit=archive_code(directory,files,message='Archive Pod DeepSeek trace-replay implementation')
     deployment={'files':[{'path':'implementation/'+str(p.relative_to(ROOT)),'sha256':sha256_file(p),'size':p.stat().st_size}
-                         for p in files], 'git_commit':commit, 'tau3_bundles': bundles}
+                         for p in files], 'git_commit':commit, 'tau3_bundles': bundles,
+                'source_archive': source_archive}
     write_json(directory/'deployment.json',deployment)
     # Bundle the active source branch separately from the exact worker snapshot.
     branch=subprocess.check_output(['git','branch','--show-current'],cwd=ROOT,text=True).strip()
@@ -143,6 +149,9 @@ def launch_pod(args, plan, directory, remote_directory):
         transfer_files(args.host,remote_directory,
                        [(directory/value['archive'],value['archive']) for value in bundles.values()] +
                        [(directory/'tau3-bundles.json','tau3-bundles.json')])
+    if source_archive:
+        transfer_files(args.host,remote_directory,[(directory/source_archive['archive'],source_archive['archive']),
+                        (directory/'tau3-source-inputs-manifest.json','tau3-source-inputs-manifest.json')])
     bootstrap='''import hashlib,json,os,pathlib,subprocess,sys,tarfile,urllib.request
 p=pathlib.Path(DIRECTORY)
 for row in FILES:
@@ -156,11 +165,16 @@ subprocess.run(['git','clone','-b',provenance['branch'],str(p/'source-branch.bun
 assert subprocess.check_output(['git','-C',str(checkout),'rev-parse','HEAD'],text=True).strip()==provenance['head']
 sys.path.insert(0,str(p/'implementation'))
 from m0a.pod_runtime import SupervisorService,preflight,health,port_available,same_process,sha256,service_command
+from m0a.tau3_reuse import unpack_archive
 from m0a.run_requests import request
 model=pathlib.Path(MODEL)
 root=pathlib.Path(ROOT)
 service=SupervisorService(root,model)
 launch=json.loads((p/'launch.json').read_text())
+if launch.get('source_archive'):
+ info=launch['source_archive']
+ assert info==json.loads((p/'deployment.json').read_text())['source_archive']
+ unpack_archive(p/info['archive'],p/'tau3-source-inputs-manifest.json',p/'source-inputs',info)
 tool_smoke=None
 if launch['workload']=='tau3_v1.0.1':
  tau=pathlib.Path(launch['tau_root'])
@@ -356,6 +370,7 @@ def main():
     parser.add_argument('--model-dir',type=Path)
     parser.add_argument('--validation-mode',choices=('strict','trace-replay'),default='strict')
     parser.add_argument('--workload',choices=('tau3_v1.0.1','synthetic'),default='synthetic')
+    parser.add_argument('--reuse-tau3-run',help='Verified archived τ³ run whose raw inputs will be reused')
     parser.add_argument('--diagnostic-only',action='store_true',help='Stop after stability diagnostics and restore the original service')
     parser.add_argument('--repair',action='store_true',help='Test deterministic candidates, then diagnose and replay operators if stability fails')
     parser.add_argument('--host',default='hust')
@@ -364,6 +379,10 @@ def main():
     parser.add_argument('--remote-directory',help=argparse.SUPPRESS)
     parser.add_argument('--local-directory',type=Path,help=argparse.SUPPRESS)
     args=parser.parse_args()
+    if args.reuse_tau3_run and (args.workload != 'tau3_v1.0.1' or
+                               not args.reuse_tau3_run.startswith('deepseek_') or
+                               '/' in args.reuse_tau3_run):
+        parser.error('--reuse-tau3-run requires a τ³ workload and a local archived run ID')
     if args.validation_mode=='trace-replay' and (args.repair or args.diagnostic_only):
         parser.error('--validation-mode trace-replay cannot be combined with --repair or --diagnostic-only')
     if args.runtime=='pod' and args.model_dir is None:

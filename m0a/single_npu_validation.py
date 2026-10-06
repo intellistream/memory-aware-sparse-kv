@@ -271,7 +271,8 @@ class Worker:
         write_json(manifest, {'run_id': self.run_id, 'stage': stage, 'created_at': utc(), 'files': records})
         digest = sha256_file(manifest)
         self.update(pending_checkpoint=name, pending_manifest_sha256=digest)
-        deadline = time.monotonic() + SYNC_SECONDS
+        sync_seconds = getattr(self, 'checkpoint_sync_seconds', SYNC_SECONDS)
+        deadline = time.monotonic() + sync_seconds
         while time.monotonic() < deadline:
             failure = self.directory / 'sync-failed.json'
             require(not failure.exists(), 'Local synchronization failed after three attempts')
@@ -283,7 +284,7 @@ class Worker:
                 self.update(pending_checkpoint=None, last_synced_checkpoint=name)
                 return
             time.sleep(1)
-        raise TimeoutError('Local synchronization acknowledgment timed out')
+        raise TimeoutError(f'Local synchronization acknowledgment timed out after {sync_seconds} seconds at {name}')
 
     def cleanup(self):
         results = []

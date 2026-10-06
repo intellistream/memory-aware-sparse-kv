@@ -128,7 +128,14 @@ def extract_checked(stream, records, target):
 
 
 def download_records(host, server_directory, records, local_directory, *,
-                     deadline=None, progress=None):
+                     deadline=None, progress=None, event=None):
+    if not records:
+        return
+    original_count = len(records)
+    records = [record for record in records if not (Path(local_directory) / record['path']).is_file()
+               or sha256_file(Path(local_directory) / record['path']) != record['sha256']]
+    if event:
+        event('hash_skip', skipped=original_count-len(records), pending=len(records))
     if not records:
         return
     # Trace source copies can contain thousands of files. Send the name list
@@ -140,7 +147,7 @@ def download_records(host, server_directory, records, local_directory, *,
     batches, batch, size = [], [], 0
     for record in records:
         safe_relative(record['path'])
-        if batch and size + record['size'] > 256 * 1024**2:
+        if batch and (size + record['size'] > 32 * 1024**2 or len(batch) >= 64):
             batches.append(batch)
             batch, size = [], 0
         batch.append(record)
@@ -148,40 +155,73 @@ def download_records(host, server_directory, records, local_directory, *,
     if batch:
         batches.append(batch)
     done = 0
-    for batch in batches:
+    for batch_number, batch in enumerate(batches, 1):
         if deadline is not None and time.monotonic() >= deadline:
-            raise TimeoutError('Final artifact synchronization exceeded its deadline')
+            raise TimeoutError(f'Transfer deadline exceeded before batch {batch_number}/{len(batches)}')
         names = ('\0'.join(record['path'] for record in batch) + '\0').encode()
+        started = time.monotonic()
+        if event:
+            event('transfer_start', batch=batch_number, batches=len(batches), files=len(batch),
+                  bytes=sum(r['size'] for r in batch))
         with tempfile.TemporaryFile() as stream:
-            subprocess.run(ssh_command(host, command), input=names, stdout=stream,
-                           timeout=3600, check=True)
+            try:
+                subprocess.run(ssh_command(host, command), input=names, stdout=stream,
+                               timeout=min(3600, max(1, deadline-time.monotonic())) if deadline else 3600,
+                               check=True)
+            except subprocess.TimeoutExpired as error:
+                raise TimeoutError(f'Transfer timed out in batch {batch_number}/{len(batches)}') from error
             stream.seek(0)
+            if event:
+                event('verify_start', batch=batch_number, batches=len(batches))
             extract_checked(stream, batch, local_directory)
         done += len(batch)
+        if event:
+            event('batch_verified', batch=batch_number, batches=len(batches), done=done,
+                  total=len(records), elapsed_seconds=round(time.monotonic()-started, 3))
         if progress:
             progress(done, len(records))
 
 
-def synchronize_checkpoint(host, server_directory, local_directory, name, digest):
+def synchronize_checkpoint(host, server_directory, local_directory, name, digest, *,
+                           write_ack=True, progress=None):
     safe_relative(name)
     require('/' not in name, 'Invalid checkpoint name')
     path = str(PurePosixPath(server_directory) / 'checkpoints' / (name + '.json'))
-    data = remote(host, 'from pathlib import Path\nimport sys\nsys.stdout.buffer.write(Path(' + repr(path) + ').read_bytes())\n')
+    def event(stage, **details):
+        payload = {'checkpoint': name, 'stage': stage, 'at': utc(), **details}
+        print('Checkpoint sync:', json.dumps(payload), flush=True)
+        if progress:
+            progress(payload)
+    event('manifest_discovery')
+    try:
+        data = remote(host, 'from pathlib import Path\nimport sys\nsys.stdout.buffer.write(Path(' + repr(path) + ').read_bytes())\n')
+    except subprocess.TimeoutExpired as error:
+        raise TimeoutError('Checkpoint manifest discovery timed out: ' + name) from error
     require(hashlib.sha256(data).hexdigest() == digest, 'Manifest SHA-256 mismatch')
     manifest = json.loads(data)
     require(manifest['run_id'] == Path(local_directory).name, 'Wrong synchronization run')
     records = manifest['files']
-    download_records(host, server_directory, records, local_directory)
+    event('manifest_verified', files=len(records), bytes=sum(r['size'] for r in records))
+    deadline = time.monotonic() + 3600
+    download_records(host, server_directory, records, local_directory, deadline=deadline, event=event)
     manifest_path = Path(local_directory) / 'checkpoints' / (name + '.json')
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_bytes(data)
     ack = {'run_id': manifest['run_id'], 'manifest_sha256': digest, 'files': records, 'verified_at': utc()}
     ack_path = str(PurePosixPath(server_directory) / 'acks' / (name + '.json'))
-    remote(host, 'import pathlib,json\np=pathlib.Path(' + repr(ack_path) + ')\np.parent.mkdir(parents=True,exist_ok=True)\n'
-                't=p.with_name(p.name+".tmp")\nt.write_text(' + repr(json.dumps(ack)) + ')\nt.replace(p)\n')
-    write_json(Path(local_directory) / 'acks' / (name + '.json'), ack)
+    if write_ack:
+        event('ack_write_start')
+        try:
+            remote(host, 'import pathlib,json\np=pathlib.Path(' + repr(ack_path) + ')\np.parent.mkdir(parents=True,exist_ok=True)\n'
+                        't=p.with_name(p.name+".tmp")\nt.write_text(' + repr(json.dumps(ack)) + ')\nt.replace(p)\n')
+        except subprocess.TimeoutExpired as error:
+            raise TimeoutError('Checkpoint ACK write timed out: ' + name) from error
+        write_json(Path(local_directory) / 'acks' / (name + '.json'), ack)
+        event('ack_written')
+    else:
+        event('evidence_verified_after_worker_exit', ack_written=False)
     with (Path(local_directory) / 'sync-ledger.jsonl').open('a') as out:
-        out.write(json.dumps({'checkpoint': name, **ack}) + '\n')
+        out.write(json.dumps({'checkpoint': name, 'ack_written': write_ack, **ack}) + '\n')
     return ack
 
 
@@ -195,7 +235,7 @@ def retry_sync(action, *, attempts=3, delay=5):
             print(f'Sync attempt {attempt + 1}/{attempts}: {error}', flush=True)
             if attempt + 1 < attempts:
                 time.sleep(delay)
-    raise RuntimeError('Synchronization failed after three attempts') from last
+    raise RuntimeError(f'Synchronization failed after {attempts} attempts at {last}') from last
 
 
 def status_remote(host, directory):
@@ -250,6 +290,10 @@ def qualified_final_status(directory, current):
                  'context-feasibility.json',
                  'source-branch.bundle', 'branch-provenance.json'} <= paths,
                 'Missing public workload provenance or locality result')
+        if (directory / 'launch.json').exists() and json.loads((directory / 'launch.json').read_text()).get('reuse_tau3_run'):
+            require({'source-lineage.json', 'tau3-source-inputs.tar.gz',
+                     'tau3-source-inputs-manifest.json', 'source-inputs/old-pairs.json'} <= paths,
+                    'Missing reused τ³ source archive or lineage')
     expected_requests = 4 * len(json.loads((directory / 'pairs.json').read_text())['pairs']) if tau3 else 48
     require(report['status']=='engineering_validated' and report['validation_mode']=='trace-replay' and
             report['strict_output_acceptance']==('passed' if tau3 else 'not_qualified') and not report['missing_artifacts'],
@@ -294,11 +338,16 @@ def guardian(host, remote_directory, directory):
             write_json(directory / 'status.json', current)
             update(server_stage=current['stage'], server_status=current['status'])
             pending = current.get('pending_checkpoint')
-            if pending and pending not in completed and current['stage'] != 'finished':
+            if pending and pending not in completed:
                 ack = retry_sync(lambda: synchronize_checkpoint(host, remote_directory, directory, pending,
-                                                                current['pending_manifest_sha256']))
+                                                                current['pending_manifest_sha256'],
+                                                                write_ack=current['stage'] != 'finished',
+                                                                progress=lambda event: update(sync_stage=event['stage'],
+                                                                                              sync_checkpoint=pending,
+                                                                                              sync_progress=event)))
                 completed.add(pending)
-                update(last_verified_checkpoint=pending, last_manifest_sha256=ack['manifest_sha256'], verified_files=len(ack['files']))
+                update(last_verified_checkpoint=pending, last_manifest_sha256=ack['manifest_sha256'],
+                       verified_files=len(ack['files']), late_evidence=current['stage'] == 'finished')
             if not current['worker_alive']:
                 if current['stage'] != 'finished':
                     if current.get('watchdog_alive'):
@@ -329,7 +378,8 @@ def guardian(host, remote_directory, directory):
                 paths += [directory / r['path'] for r in records if (r['path'].startswith('replay-') and r['path'].endswith('/report.json')) or r['path'].startswith('diagnostics/') or r['path'] in
                     {'report.json', 'report.md', 'status.json', 'layout.json', 'trace-validation.json',
                      'locality.json', 'tau3-provenance.json', 'event-audit.json',
-                     'context-feasibility.json',
+                     'context-feasibility.json', 'source-lineage.json',
+                     'tau3-source-inputs-manifest.json',
                      'replay-64mib/report.json', 'replay-128mib/report.json', 'deployment.json', 'resource-release.json',
                      'restoration.json', 'compressor-contract.json', 'identity.json', 'diagnostics.json', 'selected-config.json',
                      'trace_off-failures.json', 'trace_on-failures.json', 'trace_off-output-differences.json',

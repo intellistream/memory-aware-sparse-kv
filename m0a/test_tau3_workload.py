@@ -100,7 +100,7 @@ class EpisodeSelectionTests(unittest.TestCase):
                              'tool_calls': [{'id': call_id, 'type': 'function',
                                              'function': {'name': 'KB_search', 'arguments': '{}'}}]},
                             {'role': 'tool', 'tool_call_id': call_id,
-                             'content': 'result', '_tokens': 1200}]
+                             'content': 'result', '_tokens': 2750}]
                 event = {'eligible': True, 'call_id': call_id, 'result': 'result',
                          'tool_name': 'KB_search', 'started_ns': 1, 'finished_ns': 2,
                          'assistant_index': 2}
@@ -126,6 +126,11 @@ class EpisodeSelectionTests(unittest.TestCase):
                                              for task_id in pair['history_task_ids']}), 48)
                 self.assertTrue(all(len(pair['history_task_ids']) ==
                                     len(set(pair['history_task_ids'])) for pair in source))
+                training = {task for pair in source if pair['context_target'] == TARGETS[0]
+                            for task in pair['history_task_ids']}
+                evaluation = {task for pair in source if pair['context_target'] == TARGETS[1]
+                              for task in pair['history_task_ids']}
+                self.assertFalse(training & evaluation)
 
 
 class MemoryAuditTests(unittest.TestCase):

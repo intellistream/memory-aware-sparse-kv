@@ -31,6 +31,7 @@ From this clean, committed branch, run the single launch command:
 python3 scripts/launch_deepseek_validation.py --execute --runtime pod \
   --model-dir /models/DeepSeek-V4-Flash-W8A8 \
   --validation-mode trace-replay --workload tau3_v1.0.1 \
+  --reuse-tau3-run deepseek_20261005T134845Z_3eb88906 \
   --host hust --remote-root /root/memory-aware-sparse-kv
 ```
 
@@ -43,6 +44,11 @@ Exit code 0 means these processes have taken over and the first checkpoint is ve
 it does not mean the experiment has passed. The JSON printed by the launcher contains
 `run_id`, `status_path`, `sync_status_path`, `final_status_path`, log paths and a recovery
 command for use only if the guardian exits unexpectedly.
+
+`--reuse-tau3-run` reads the final-hash-verified raw collection from the named
+local run. It transfers and verifies the complete input snapshot on the Pod,
+then rebuilds pairs, event audit, and context feasibility with the live
+tokenizer. The old pairs remain separately archived for provenance.
 
 The worker collects 48 pairs: two domains × six event classes × 8K/32K contexts × two
 independent chains. Each phase attempts 192 requests: two variants and two repetitions
