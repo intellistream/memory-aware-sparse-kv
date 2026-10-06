@@ -38,8 +38,10 @@ python3 scripts/launch_deepseek_validation.py --execute --runtime pod \
 The launcher pins τ³-bench v1.0.1 to commit `fc0055dc4e0a316c3f83133267fbd6faaa770992`,
 transfers hash-checked source/data, aarch64 wheels, and aarch64 `uv 0.11.8` from the local machine,
 builds an isolated Pod environment with `uv` and installs dependencies offline, checks the service and
-executes a real retail tool call. It then transfers the checked implementation and starts
-a worker, an independent recovery watchdog, and a local SHA-256 synchronization guardian.
+executes a real retail tool call. For a reused τ³ run, it seals 48 new pairs in the new
+run directory and checks all 96 event/control token ID sequences against the live model
+tokenizer before starting a worker, an independent recovery watchdog, and a local
+SHA-256 synchronization guardian.
 Exit code 0 means these processes have taken over and the first checkpoint is verified;
 it does not mean the experiment has passed. The JSON printed by the launcher contains
 `run_id`, `status_path`, `sync_status_path`, `final_status_path`, log paths and a recovery
@@ -48,7 +50,11 @@ command for use only if the guardian exits unexpectedly.
 `--reuse-tau3-run` reads the final-hash-verified raw collection from the named
 local run. It transfers and verifies the complete input snapshot on the Pod,
 then rebuilds pairs, event audit, and context feasibility with the live
-tokenizer. The old pairs remain separately archived for provenance.
+tokenizer before starting the worker. The worker verifies the sealed file hashes,
+source snapshot, model tokenizer hash, and all 96 token ID sequences before use.
+The old pairs remain separately archived for provenance. A failed precheck writes
+`tau3-precheck-failure.json` on the Pod and `launch-failure.json` locally, and does
+not start the worker or guardian.
 
 The worker collects 48 pairs: two domains × six event classes × 8K/32K contexts × two
 independent chains. Each phase attempts 192 requests: two variants and two repetitions

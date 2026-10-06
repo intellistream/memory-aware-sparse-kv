@@ -61,6 +61,32 @@ print(json.dumps(active))
     return {'prior_runs_checked': True}
 
 
+def checked_bootstrap(host, bootstrap, directory, remote_directory):
+    """Keep the worker launch behind a successful, recorded remote precheck."""
+    try:
+        output = remote(host, bootstrap, timeout=5 * 3600).decode().splitlines()
+        require(output, 'Remote Pod bootstrap returned no evidence')
+        evidence = json.loads(output[-1])
+        require((not json.loads((directory / 'launch.json').read_text()).get('reuse_tau3_run')
+                 or evidence.get('tau3_precheck_sha256')),
+                'Remote τ³ precheck did not seal a pair set')
+        return evidence
+    except Exception as error:
+        failure = {'status': 'failed', 'stage': 'pod_precheck_or_bootstrap',
+                   'error': str(error), 'at': utc()}
+        try:
+            code = '''import json,pathlib
+p=pathlib.Path(DIRECTORY)
+print(json.dumps({name:json.loads((p/name).read_text()) for name in
+ ('tau3-precheck-failure.json','tau3-precheck.json') if (p/name).exists()}))
+'''.replace('DIRECTORY', repr(remote_directory))
+            failure['remote_evidence'] = json.loads(remote(host, code))
+        except Exception as evidence_error:
+            failure['evidence_error'] = str(evidence_error)
+        write_json(directory / 'launch-failure.json', failure)
+        raise
+
+
 def launch(args):
     stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     run_id=f'deepseek_{stamp}_{uuid.uuid4().hex[:8]}'
@@ -281,9 +307,26 @@ print(json.dumps({'tool':tool.name,'args':args,'result':str(value)[:200],
  output=subprocess.check_output([str(venv/'bin/python'),'-c',smoke],
   env=dict(tau_env,PYTHONPATH=str(p/'implementation')+os.pathsep+str(tau/'src')),timeout=300,text=True)
  tool_smoke=json.loads(output.splitlines()[-1])
+ if launch.get('reuse_tau3_run'):
+  try:
+   with (p/'tau3-precheck.log').open('wb') as log:
+    subprocess.run([str(venv/'bin/python'),'-m','m0a.tau3_precheck',
+                    '--output',str(p),'--tau-root',str(tau),
+                    '--tokenizer-sha256',sha256(model/'tokenizer.json')],
+                   env=dict(tau_env,PYTHONPATH=str(p/'implementation')+os.pathsep+str(tau/'src')),
+                   stdout=log,stderr=subprocess.STDOUT,timeout=4*3600,check=True)
+  except Exception as error:
+   failure=p/'tau3-precheck-failure.json'
+   if not failure.exists():
+    failure.write_text(json.dumps({'status':'failed','step':'precheck_process',
+                                   'error':str(error)})+'\\n')
+   raise
+  sealed=json.loads((p/'tau3-precheck.json').read_text())
+  assert sealed['status']=='passed' and sealed['source_run_id']==launch['reuse_tau3_run']
 evidence={'checkout':str(checkout),'git_commit':provenance['head'],'models':models,
           'process_identity':service.identity(),'supervisor_config_sha256':sha256(service.conf),
-          'short_request_id':result['id'],'tool_smoke':tool_smoke}
+          'short_request_id':result['id'],'tool_smoke':tool_smoke,
+          'tau3_precheck_sha256':sha256(p/'tau3-precheck.json') if launch.get('reuse_tau3_run') else None}
 (p/'service-bootstrap.json').write_text(json.dumps(evidence,indent=2)+'\\n')
 print(json.dumps(evidence))
 '''
@@ -291,9 +334,7 @@ print(json.dumps(evidence))
                         .replace('FILES',repr(deployment['files']))
                         .replace('MODEL',repr(str(args.model_dir)))
                         .replace('ROOT',repr(args.remote_root)))
-    bootstrap_output=remote(args.host,bootstrap,timeout=3600).decode().splitlines()
-    require(bootstrap_output, 'Remote Pod bootstrap returned no evidence')
-    bootstrap_result=json.loads(bootstrap_output[-1])
+    bootstrap_result=checked_bootstrap(args.host,bootstrap,directory,remote_directory)
     write_json(directory/'service-bootstrap.json',bootstrap_result)
     start='''import json,os,pathlib,subprocess,sys
 p=pathlib.Path(DIRECTORY)

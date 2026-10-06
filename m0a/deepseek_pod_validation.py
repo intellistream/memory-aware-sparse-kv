@@ -60,6 +60,10 @@ class PodWorker(Worker):
         if stage == 'bootstrap':
             extra = [self.directory / name for name in
                      ('source-branch.bundle', 'branch-provenance.json', 'service-bootstrap.json')]
+            if self.reuse_source_run:
+                extra += [self.directory / name for name in
+                          ('tau3-precheck.json', 'pairs.json', 'event-audit.json',
+                           'context-feasibility.json', 'source-lineage.json')]
         elif stage == 'inputs':
             trace = self.directory / 'trace-python/vllm_ascend'
             extra = [self.directory / 'trace-source.json',
@@ -212,31 +216,38 @@ class PodWorker(Worker):
     def prepare(self):
         self.update(stage='prepare_inputs')
         if self.workload == 'tau3_v1.0.1':
-            self.set_phase_budget('collection_and_pairs', 4 * 3600)
             inventory = json.loads((self.directory / 'identity.json').read_text())
             tokenizer_hash = inventory['metadata']['tokenizer.json']['sha256']
-            executable = self.root / 'runtime/tau3-v1.0.1-venv/bin/python'
-            require(executable.is_file(), 'Pinned τ³ environment missing')
-            command = [str(executable), '-m', 'm0a.tau3_workload', '--tau-root', str(self.tau_root),
-                       '--output', str(self.directory), '--tokenizer-sha256', tokenizer_hash]
             if self.reuse_source_run:
-                command += ['--reuse-inputs', str(self.directory / 'source-inputs')]
-            self.command(command,
-                         timeout=4 * 3600, output=self.directory / 'tau3-collection.log',
-                         env=dict(os.environ, PYTHONPATH=str(self.code_root)))
+                from .tau3_precheck import verify_seal
+                seal = verify_seal(self.directory, tokenizer_hash)
+                require(seal['source_run_id'] == self.reuse_source_run,
+                        'Precheck source run differs from launch')
+            else:
+                self.set_phase_budget('collection_and_pairs', 4 * 3600)
+                executable = self.root / 'runtime/tau3-v1.0.1-venv/bin/python'
+                require(executable.is_file(), 'Pinned τ³ environment missing')
+                command = [str(executable), '-m', 'm0a.tau3_workload', '--tau-root', str(self.tau_root),
+                           '--output', str(self.directory), '--tokenizer-sha256', tokenizer_hash]
+                self.command(command,
+                             timeout=4 * 3600, output=self.directory / 'tau3-collection.log',
+                             env=dict(os.environ, PYTHONPATH=str(self.code_root)))
             result = json.loads((self.directory / 'pairs.json').read_text())
-            for pair in result['pairs']:
-                for variant in ('event', 'control'):
-                    item = pair[variant]
-                    actual = request({'model': 'dsv4', 'messages': item['messages'],
-                                      'add_generation_prompt': True},
-                                     url='http://127.0.0.1:8900/tokenize')
-                    require(actual['tokens'] == item['prompt_token_ids'],
-                            'Actual workload tokenizer differs')
+            if not self.reuse_source_run:
+                for pair in result['pairs']:
+                    for variant in ('event', 'control'):
+                        item = pair[variant]
+                        actual = request({'model': 'dsv4', 'messages': item['messages'],
+                                          'add_generation_prompt': True},
+                                         url='http://127.0.0.1:8900/tokenize')
+                        require(actual['tokens'] == item['prompt_token_ids'],
+                                'Actual workload tokenizer differs')
             self.check_phase_deadline()
             self.phase_deadline = None
             self.phase_label = None
-            (self.directory / 'prepare.log').write_text('Verified all τ³ message token IDs\n')
+            (self.directory / 'prepare.log').write_text(
+                'Verified sealed τ³ pair set and all 96 message token IDs\n' if self.reuse_source_run
+                else 'Verified all τ³ message token IDs\n')
             return result
         profile = load_profile('deepseek_v4')
         source = self.code_root / 'm0a/pairs.json'
@@ -481,6 +492,10 @@ class PodWorker(Worker):
         report['runtime'] = 'pod'
         if self.workload == 'tau3_v1.0.1':
             report['workload'] = self.workload
+            if self.reuse_source_run:
+                report['tau3_precheck_sha256'] = sha256_file(self.directory / 'tau3-precheck.json')
+                report['tau3_precheck_summary'] = json.loads(
+                    (self.directory / 'tau3-precheck.json').read_text())['summary']
             report['evidence_level'] = 'public τ³ task workload with actual benchmark tool calls'
             report['strict_output_acceptance'] = 'passed' if status == 'engineering_validated' else 'failed'
             locality = self.directory / 'locality.json'

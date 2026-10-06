@@ -297,8 +297,16 @@ def qualified_final_status(directory, current):
                 'Missing public workload provenance or locality result')
         if (directory / 'launch.json').exists() and json.loads((directory / 'launch.json').read_text()).get('reuse_tau3_run'):
             require({'source-lineage.json', 'tau3-source-inputs.tar.gz',
-                     'tau3-source-inputs-manifest.json', 'source-inputs/old-pairs.json'} <= paths,
+                     'tau3-source-inputs-manifest.json', 'source-inputs/old-pairs.json',
+                     'tau3-precheck.json', 'tau3-precheck.log'} <= paths,
                     'Missing reused τ³ source archive or lineage')
+            from m0a.tau3_precheck import verify_seal
+            seal = verify_seal(directory,
+                               json.loads((directory / 'identity.json').read_text())['metadata']['tokenizer.json']['sha256'],
+                               live_tokens=False)
+            require(sha256_file(directory / 'tau3-precheck.json') == report['tau3_precheck_sha256'] and
+                    seal['summary'] == report['tau3_precheck_summary'],
+                    'Final report precheck digest or summary differs')
     expected_requests = 4 * len(json.loads((directory / 'pairs.json').read_text())['pairs']) if tau3 else 48
     require(report['status']=='engineering_validated' and report['validation_mode']=='trace-replay' and
             report['strict_output_acceptance']==('passed' if tau3 else 'not_qualified') and not report['missing_artifacts'],
@@ -383,7 +391,7 @@ def guardian(host, remote_directory, directory):
                 paths += [directory / r['path'] for r in records if (r['path'].startswith('replay-') and r['path'].endswith('/report.json')) or r['path'].startswith('diagnostics/') or r['path'] in
                     {'report.json', 'report.md', 'status.json', 'layout.json', 'trace-validation.json',
                      'locality.json', 'tau3-provenance.json', 'event-audit.json',
-                     'context-feasibility.json', 'source-lineage.json',
+                     'context-feasibility.json', 'source-lineage.json', 'tau3-precheck.json',
                      'tau3-source-inputs-manifest.json',
                      'replay-64mib/report.json', 'replay-128mib/report.json', 'deployment.json', 'resource-release.json',
                      'restoration.json', 'compressor-contract.json', 'identity.json', 'diagnostics.json', 'selected-config.json',
