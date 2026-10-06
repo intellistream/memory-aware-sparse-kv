@@ -104,6 +104,7 @@ def launch(args):
           'validation_mode':args.validation_mode,'runtime':args.runtime,'model_dir':str(args.model_dir) if args.model_dir else None,
           'execution_available':args.runtime=='pod' and args.validation_mode=='trace-replay',
           'workload':args.workload,
+          'exploratory_drift':args.exploratory_drift,
           'reuse_tau3_run':args.reuse_tau3_run,
           'tau_root':str(PurePosixPath(args.remote_root)/'runtime/tau2-v1.0.1')
               if args.workload=='tau3_v1.0.1' else None}
@@ -118,12 +119,18 @@ def launch(args):
         plan.update(candidate_order=['original_fresh'] if args.workload=='synthetic' else plan['candidate_order'],
                     diagnostic_requests_per_candidate=0 if args.workload=='synthetic' else 20,
                     strict_output_acceptance='not_qualified')
+    if args.exploratory_drift:
+        plan.update(candidate_order=['original_fresh'], diagnostic_requests_per_candidate=0,
+                    strict_output_acceptance='separate_from_engineering')
     if not args.execute:
         print(json.dumps(plan,ensure_ascii=False,indent=2))
         return 0
     require(args.runtime=='pod', 'Live execution is disabled for the old Docker runtime; pass --runtime pod')
     require(args.validation_mode=='trace-replay' and not args.repair and not args.diagnostic_only,
             'Pod execution requires trace-replay without repair/diagnostic mode')
+    require(not args.exploratory_drift or
+            (args.workload == 'tau3_v1.0.1' and args.reuse_tau3_run),
+            'Exploratory drift requires an archived τ³ run')
     require(args.model_dir and args.model_dir.is_absolute() and str(args.model_dir).startswith('/models/'),
             'Pass the absolute read-only --model-dir under /models')
     lock_path = ROOT / 'm0a/runs/.launch.lock'
@@ -312,7 +319,8 @@ print(json.dumps({'tool':tool.name,'args':args,'result':str(value)[:200],
    with (p/'tau3-precheck.log').open('wb') as log:
     subprocess.run([str(venv/'bin/python'),'-m','m0a.tau3_precheck',
                     '--output',str(p),'--tau-root',str(tau),
-                    '--tokenizer-sha256',sha256(model/'tokenizer.json')],
+                    '--tokenizer-sha256',sha256(model/'tokenizer.json'),
+                    *(['--reuse-sealed-pairs'] if launch.get('exploratory_drift') else [])],
                    env=dict(tau_env,PYTHONPATH=str(p/'implementation')+os.pathsep+str(tau/'src')),
                    stdout=log,stderr=subprocess.STDOUT,timeout=4*3600,check=True)
   except Exception as error:
@@ -412,6 +420,8 @@ def main():
     parser.add_argument('--validation-mode',choices=('strict','trace-replay'),default='strict')
     parser.add_argument('--workload',choices=('tau3_v1.0.1','synthetic'),default='synthetic')
     parser.add_argument('--reuse-tau3-run',help='Verified archived τ³ run whose raw inputs will be reused')
+    parser.add_argument('--exploratory-drift',action='store_true',
+                        help='Use the original service and sealed τ³ pairs; record drift without strict output qualification')
     parser.add_argument('--diagnostic-only',action='store_true',help='Stop after stability diagnostics and restore the original service')
     parser.add_argument('--repair',action='store_true',help='Test deterministic candidates, then diagnose and replay operators if stability fails')
     parser.add_argument('--host',default='hust')
@@ -426,6 +436,9 @@ def main():
         parser.error('--reuse-tau3-run requires a τ³ workload and a local archived run ID')
     if args.validation_mode=='trace-replay' and (args.repair or args.diagnostic_only):
         parser.error('--validation-mode trace-replay cannot be combined with --repair or --diagnostic-only')
+    if args.exploratory_drift and (args.validation_mode != 'trace-replay' or
+                                   args.workload != 'tau3_v1.0.1' or not args.reuse_tau3_run):
+        parser.error('--exploratory-drift requires --validation-mode trace-replay, τ³, and --reuse-tau3-run')
     if args.runtime=='pod' and args.model_dir is None:
         parser.error('--runtime pod requires --model-dir')
     if args.guardian:

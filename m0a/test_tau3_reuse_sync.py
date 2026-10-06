@@ -29,7 +29,8 @@ class SourceReuseTests(unittest.TestCase):
                         for domain in ('retail', 'banking_knowledge') for index in range(48)]
             content = {'episodes.json': json.dumps(episodes).encode(),
                        'collection-summary.json': b'{}', 'rejected-episodes.json': b'[]',
-                       'tau3-provenance.json': b'{}', 'pairs.json': b'{"old":true}'}
+                       'tau3-provenance.json': b'{}', 'pairs.json': b'{"old":true}',
+                       'event-audit.json': b'{}', 'context-feasibility.json': b'{}'}
             content.update({f'episode-{e["domain"]}-{e["task_id"]}.jsonl': b'original log\n'
                             for e in episodes})
             for filename, data in content.items():
@@ -49,7 +50,7 @@ class SourceReuseTests(unittest.TestCase):
             self.assertEqual(len(verify_snapshot(target / 'source-inputs')['files']), len(content))
             self.assertTrue((target / 'source-inputs/old-pairs.json').exists())
             (source / 'episode-retail-000.jsonl').write_text('tampered')
-            with self.assertRaisesRegex(ValueError, 'Source file hash mismatch'):
+            with self.assertRaisesRegex(ValueError, 'Source final inventory mismatch'):
                 source_records(source)
             (target / 'source-inputs/episodes.json').write_text('tampered')
             with self.assertRaisesRegex(ValueError, 'Source snapshot hash mismatch'):

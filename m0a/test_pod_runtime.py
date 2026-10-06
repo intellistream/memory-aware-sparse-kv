@@ -130,12 +130,15 @@ class PodRuntimeTests(unittest.TestCase):
         with patch('scripts.launch_single_npu_validation.subprocess.run') as run, \
              patch('scripts.launch_single_npu_validation.extract_checked'):
             download_records('hust', '/remote/run', records, '/local/run')
-        args, kwargs = run.call_args
-        self.assertLess(len(args[0][-1]), 200)
-        self.assertIn('--dereference', args[0][-1])
-        self.assertIn('--hard-dereference', args[0][-1])
-        self.assertIn(b'trace-python/file-11999.py\0', kwargs['input'])
-        self.assertEqual(kwargs['input'].count(b'\0'), len(records))
+        self.assertGreater(run.call_count, 1)
+        sent = b''.join(call.kwargs['input'] for call in run.call_args_list)
+        for call in run.call_args_list:
+            self.assertLess(len(call.args[0][-1]), 200)
+            self.assertIn('--dereference', call.args[0][-1])
+            self.assertIn('--hard-dereference', call.args[0][-1])
+            self.assertLessEqual(call.kwargs['input'].count(b'\0'), 64)
+        self.assertIn(b'trace-python/file-11999.py\0', sent)
+        self.assertEqual(sent.count(b'\0'), len(records))
 
     def test_compressed_sync_verifies_original_file_hash(self):
         content = b'authentic trace rows\n' * 1000

@@ -45,10 +45,13 @@ class PrecheckTests(unittest.TestCase):
             inputs = directory / 'source-inputs'
             inputs.mkdir()
             (inputs / 'tau3-source-inputs-manifest.json').write_text(
-                json.dumps({'source_run_id': 'old-run'}))
+                json.dumps({'source_run_id': 'old-run',
+                            'source_final_manifest_sha256': 'b' * 64,
+                            'old_pairs_sha256': 'c' * 64}))
             fixture(directory)
             with patch('m0a.tau3_precheck.regenerate', return_value=None), \
-                 patch('m0a.tau3_precheck.verify_snapshot', return_value={'source_run_id': 'old-run'}), \
+                 patch('m0a.tau3_precheck.verify_snapshot', return_value={
+                     'source_run_id': 'old-run', 'source_final_manifest_sha256': 'b' * 64}), \
                  patch('m0a.tau3_precheck.request', return_value={'tokens': [1, 2]}) as tokenize:
                 seal = create(directory, directory, 'a' * 64)
                 self.assertEqual(seal['summary']['pairs'], 48)

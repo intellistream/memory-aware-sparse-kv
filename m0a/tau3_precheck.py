@@ -8,7 +8,7 @@ from pathlib import Path
 from .contracts import sha256_file, validate_pair_set
 from .deepseek_validation import utc, write_json
 from .run_requests import request
-from .tau3_reuse import regenerate, verify_snapshot
+from .tau3_reuse import regenerate, reuse_sealed_pairs, verify_snapshot
 from .tau3_workload import DOMAINS, EVENTS, TARGETS
 from .working_set import require
 
@@ -79,25 +79,37 @@ def verify_seal(directory: Path, tokenizer_sha256: str, *, live_tokens: bool = T
     source = verify_snapshot(directory / 'source-inputs')
     require(seal['source_input_manifest_sha256'] ==
             sha256_file(directory / 'source-inputs/tau3-source-inputs-manifest.json') and
-            source['source_run_id'] == seal['source_run_id'], 'Precheck source snapshot changed')
+            source['source_run_id'] == seal['source_run_id'] and
+            source['source_final_manifest_sha256'] == seal['source_final_manifest_sha256'],
+            'Precheck source snapshot changed')
+    if seal.get('sealed_pair_reuse'):
+        require(source['old_pairs_sha256'] == sha256_file(directory / 'pairs.json') and
+                source['old_pairs_sha256'] == sha256_file(directory / 'source-inputs/old-pairs.json'),
+                'Archived sealed pairs changed')
     summary = check_pairs(directory, tokenizer_sha256, live_tokens=live_tokens)
     require(summary == seal['summary'], 'Precheck pair summary changed')
     return seal
 
 
-def create(directory: Path, tau_root: Path, tokenizer_sha256: str) -> dict:
+def create(directory: Path, tau_root: Path, tokenizer_sha256: str, *, reuse_sealed: bool = False) -> dict:
     directory = Path(directory)
     step = 'source_snapshot'
     try:
         verify_snapshot(directory / 'source-inputs')
         step = 'pair_generation'
-        regenerate(directory / 'source-inputs', directory, tau_root, tokenizer_sha256)
+        if reuse_sealed:
+            reuse_sealed_pairs(directory / 'source-inputs', directory, tau_root, tokenizer_sha256)
+        else:
+            regenerate(directory / 'source-inputs', directory, tau_root, tokenizer_sha256)
         step = 'tokenizer_and_coverage'
         summary = check_pairs(directory, tokenizer_sha256)
         step = 'seal'
         source = json.loads((directory / 'source-inputs/tau3-source-inputs-manifest.json').read_text())
         seal = {'status': 'passed', 'at': utc(), 'tokenizer_json_sha256': tokenizer_sha256,
                 'source_run_id': source['source_run_id'],
+                'source_final_manifest_sha256': source['source_final_manifest_sha256'],
+                'sealed_pair_reuse': reuse_sealed,
+                'archived_pairs_sha256': source['old_pairs_sha256'],
                 'source_input_manifest_sha256': sha256_file(
                     directory / 'source-inputs/tau3-source-inputs-manifest.json'),
                 'files': {name: sha256_file(directory / name) for name in FILES},
@@ -116,8 +128,10 @@ def main() -> int:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--tau-root', type=Path, required=True)
     parser.add_argument('--tokenizer-sha256', required=True)
+    parser.add_argument('--reuse-sealed-pairs', action='store_true')
     args = parser.parse_args()
-    print(json.dumps(create(args.output, args.tau_root, args.tokenizer_sha256)))
+    print(json.dumps(create(args.output, args.tau_root, args.tokenizer_sha256,
+                            reuse_sealed=args.reuse_sealed_pairs)))
     return 0
 
 

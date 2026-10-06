@@ -1013,6 +1013,11 @@ class Worker(BaseWorker):
             self.completed += ['trace_on','restore_original']
             evidence=validate_native_trace(self.directory/'raw-traces',self.directory/'traces',responses,ranges,profile,
                                            allow_selected_drift=self.validation_mode=='trace-replay')
+            output_drift=sum(len(json.loads((self.directory/(phase+'-output-differences.json')).read_text()))
+                             for phase in ('trace_off','trace_on'))
+            evidence['output_differences']=output_drift
+            if output_drift:
+                evidence['paired_effect_interpretation']='exploratory'
             write_json(self.directory/'trace-validation.json',evidence)
             support_evidence=next(e for e in layout['source_evidence'] if e['path'].endswith('compressor_kernel.h'))
             sidecar=export_sidecar(responses,pairs,profile,evidence,support_evidence)

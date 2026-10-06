@@ -89,6 +89,20 @@ The τ³ worker has a 12-hour total limit, with shorter collection, trace and CP
 stage limits. Final file synchronization has its own deadline and transfers
 compressed batches while verifying the original file hashes.
 
+## Drift-tolerant engineering run
+
+To replay the sealed prompts from `deepseek_20261006T025946Z_1c18d1e8`, add
+`--exploratory-drift` and use that run ID with `--reuse-tau3-run`. This explicit
+mode checks every file in the archived final manifest, copies the exact 48 pairs
+and source snapshot, verifies all 96 prompt token ID sequences against the live
+tokenizer, then runs the original serving command without a stability candidate
+gate. Each trace phase still requires 192 valid requests. Output and native
+selected-set differences are retained and mark paired effects exploratory;
+request, token, trace, sidecar and replay errors remain engineering failures.
+`final-status.json` sets `engineering_acceptance` only after final hashes, service
+restoration and publication pass. Drift keeps `complete_acceptance` false. The
+result does not claim an ECHO performance benefit.
+
 If all 48+48 requests and native rows were archived but a CPU validator needs a
 correction, keep the capture and its failed status unchanged. From a new checked
 out validation commit on the Pod, run:

@@ -290,12 +290,14 @@ def qualified_final_status(directory, current):
                     for scope in ('per_rank','aggregate') for capacity in (64,128))
     require(required <= paths, 'Missing final trace-replay evidence')
     tau3 = report.get('workload') == 'tau3_v1.0.1'
+    launch = json.loads((directory / 'launch.json').read_text())
+    exploratory = launch.get('exploratory_drift', False)
     if tau3:
         require({'locality.json', 'tau3-provenance.json', 'event-audit.json',
                  'context-feasibility.json',
                  'source-branch.bundle', 'branch-provenance.json'} <= paths,
                 'Missing public workload provenance or locality result')
-        if (directory / 'launch.json').exists() and json.loads((directory / 'launch.json').read_text()).get('reuse_tau3_run'):
+        if launch.get('reuse_tau3_run'):
             require({'source-lineage.json', 'tau3-source-inputs.tar.gz',
                      'tau3-source-inputs-manifest.json', 'source-inputs/old-pairs.json',
                      'tau3-precheck.json', 'tau3-precheck.log'} <= paths,
@@ -307,9 +309,15 @@ def qualified_final_status(directory, current):
             require(sha256_file(directory / 'tau3-precheck.json') == report['tau3_precheck_sha256'] and
                     seal['summary'] == report['tau3_precheck_summary'],
                     'Final report precheck digest or summary differs')
+            if exploratory:
+                require(seal.get('sealed_pair_reuse') is True and
+                        seal['archived_pairs_sha256'] == sha256_file(directory / 'pairs.json'),
+                        'Final sealed pair identity differs')
     expected_requests = 4 * len(json.loads((directory / 'pairs.json').read_text())['pairs']) if tau3 else 48
+    strict_expected = ('failed', 'passed') if exploratory else (('passed',) if tau3 else ('not_qualified',))
     require(report['status']=='engineering_validated' and report['validation_mode']=='trace-replay' and
-            report['strict_output_acceptance']==('passed' if tau3 else 'not_qualified') and not report['missing_artifacts'],
+            report['strict_output_acceptance'] in strict_expected and not report['missing_artifacts'] and
+            (not exploratory or report.get('engineering_evidence_validated') is True),
             'Engineering report does not qualify')
     require(report['completed_requests_per_phase']=={'trace_off':expected_requests,'trace_on':expected_requests} and
             report['restoration'].get('restored') is True, 'Incomplete requests or restoration')

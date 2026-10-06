@@ -1,4 +1,4 @@
-"""Hash checked reuse of a completed τ³ collection, without reusing its pairs."""
+"""Hash checked reuse of a completed τ³ collection and optional sealed pairs."""
 from __future__ import annotations
 
 import hashlib
@@ -11,7 +11,8 @@ from .deepseek_validation import write_json
 from .working_set import require
 
 METADATA = ('episodes.json', 'collection-summary.json', 'rejected-episodes.json',
-            'tau3-provenance.json', 'pairs.json')
+            'tau3-provenance.json', 'pairs.json', 'event-audit.json',
+            'context-feasibility.json')
 
 
 def _archive_name(name: str) -> str:
@@ -29,6 +30,13 @@ def source_records(source: Path) -> dict:
     inventory = json.loads(final.read_text())['files']
     indexed = {row['path']: row for row in inventory}
     require(len(indexed) == len(inventory), 'Duplicate source inventory paths')
+    for row in inventory:
+        name = row['path']
+        require(not Path(name).is_absolute() and '..' not in Path(name).parts,
+                'Unsafe source inventory path')
+        path = source / name
+        require(path.is_file() and path.stat().st_size == row['size'] and
+                sha256_file(path) == row['sha256'], 'Source final inventory mismatch: ' + name)
     episodes = json.loads((source / 'episodes.json').read_text())
     require(len(episodes) >= 96, 'Source collection is incomplete')
     from .tau3_workload import DOMAINS
@@ -36,12 +44,16 @@ def source_records(source: Path) -> dict:
         selected = [e['task_id'] for e in episodes if e['domain'] == domain]
         require(len(set(selected)) >= 48 and len(selected) == len(set(selected)),
                 f'Insufficient independent source tasks in {domain}')
-    names = sorted(name for name in indexed if name.startswith('episode-') and name.endswith('.jsonl'))
+    log_prefix = '' if any(name.startswith('episode-') for name in indexed) else 'source-inputs/'
+    names = sorted(name for name in indexed if name.startswith(log_prefix + 'episode-')
+                   and name.endswith('.jsonl'))
     require(names and set(METADATA) <= set(indexed), 'Source input inventory incomplete')
     rejected = json.loads((source / 'rejected-episodes.json').read_text())
     expected_logs = {f'episode-{e["domain"]}-{e["task_id"]}.jsonl' for e in episodes}
     expected_logs.update(Path(row['episode_log']).name for row in rejected)
-    require(set(names) == expected_logs == {p.name for p in source.glob('episode-*.jsonl')},
+    log_root = source / log_prefix
+    require({Path(name).name for name in names} == expected_logs ==
+            {p.name for p in log_root.glob('episode-*.jsonl')},
             'Complete episode log set differs from source inventory')
     rows = []
     for name in (*METADATA, *names):
@@ -49,7 +61,7 @@ def source_records(source: Path) -> dict:
         path = source / name
         require(path.is_file() and path.stat().st_size == row['size'] and
                 sha256_file(path) == row['sha256'], 'Source file hash mismatch: ' + name)
-        rows.append({'path': _archive_name(name), 'source_path': name,
+        rows.append({'path': _archive_name(Path(name).name), 'source_path': name,
                      'size': row['size'], 'sha256': row['sha256']})
     return {'source_run_id': run_id, 'source_final_manifest_sha256': sha256_file(final),
             'files': rows, 'old_pairs_sha256': indexed['pairs.json']['sha256']}
@@ -73,10 +85,11 @@ def verify_snapshot(directory: Path, *, complete: bool = True) -> dict:
     manifest = json.loads((directory / 'tau3-source-inputs-manifest.json').read_text())
     rows = manifest['files']
     paths = {row['path'] for row in rows}
-    require(len(paths) == len(rows) and paths == {_archive_name(row['source_path']) for row in rows},
+    require(len(paths) == len(rows) and paths == {_archive_name(Path(row['source_path']).name) for row in rows},
             'Invalid source snapshot manifest')
     require(paths >= {'episodes.json', 'collection-summary.json', 'rejected-episodes.json',
-                      'tau3-provenance.json', 'old-pairs.json'}, 'Source snapshot lacks metadata')
+                      'tau3-provenance.json', 'old-pairs.json', 'event-audit.json',
+                      'context-feasibility.json'}, 'Source snapshot lacks metadata')
     if complete:
         actual = {str(path.relative_to(directory)) for path in directory.rglob('*') if path.is_file()}
         require(actual == paths | {'tau3-source-inputs-manifest.json'},
@@ -151,3 +164,34 @@ def regenerate(inputs: Path, output: Path, tau_root: Path, tokenizer_sha256: str
         'reused': 'original episodes, task logs, and collection metadata',
         'regenerated': ['pairs.json', 'event-audit.json', 'context-feasibility.json']})
     return result
+
+
+def reuse_sealed_pairs(inputs: Path, output: Path, tau_root: Path,
+                       tokenizer_sha256: str) -> dict:
+    """Carry the exact archived prompts forward, without calling make_pairs."""
+    from .tau3_workload import verify_tau
+    manifest = verify_snapshot(inputs)
+    pinned = verify_tau(tau_root)
+    provenance = json.loads((inputs / 'tau3-provenance.json').read_text())
+    require(provenance['commit'] == pinned['commit'] and
+            provenance['data_sha256'] == pinned['data_sha256'],
+            'Pinned τ³ source differs from archived input')
+    pairs = json.loads((inputs / 'old-pairs.json').read_text())
+    require(pairs['tokenizer_json_sha256'] == tokenizer_sha256,
+            'Archived pair tokenizer hash mismatch')
+    output.mkdir(parents=True, exist_ok=True)
+    for name in ('episodes.json', 'collection-summary.json', 'rejected-episodes.json',
+                 'tau3-provenance.json', 'event-audit.json', 'context-feasibility.json'):
+        (output / name).write_bytes((inputs / name).read_bytes())
+    (output / 'pairs.json').write_bytes((inputs / 'old-pairs.json').read_bytes())
+    require(sha256_file(output / 'pairs.json') == manifest['old_pairs_sha256'],
+            'Archived pair bytes changed')
+    write_json(output / 'source-lineage.json', {
+        'source_run_id': manifest['source_run_id'],
+        'source_final_manifest_sha256': manifest['source_final_manifest_sha256'],
+        'source_input_manifest_sha256': sha256_file(inputs / 'tau3-source-inputs-manifest.json'),
+        'old_pairs_sha256': manifest['old_pairs_sha256'],
+        'new_pairs_sha256': sha256_file(output / 'pairs.json'),
+        'reused': 'sealed pairs, episode logs, collection metadata, event audit, and context feasibility',
+        'regenerated': []})
+    return pairs

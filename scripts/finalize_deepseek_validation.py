@@ -45,6 +45,20 @@ print(json.dumps({'healthy':True,'process_identity':identity,'models':models,
     return json.loads(remote(host, code, timeout=90))
 
 
+def acceptance_gates(guardian_exit_code: int, state: dict, report: dict) -> tuple[bool, bool]:
+    engineering = bool(
+        guardian_exit_code == 0 and state['hash_sync'] == 'verified'
+        and state['service_health'] == 'verified'
+        and report.get('status') == 'engineering_validated'
+        and report.get('engineering_evidence_validated') is True
+        and not report.get('missing_artifacts')
+        and report.get('restoration', {}).get('restored') is True)
+    complete = bool(engineering and state['output_acceptance'] == 'passed'
+        and report.get('event_locality_conclusion') not in (None, 'not_qualified', 'exploratory')
+        and report.get('paired_effect_interpretation') == 'qualified_for_offline_comparison')
+    return engineering, complete
+
+
 def finalize_run(host: str, remote_directory: str, directory: Path,
                  *, guardian_exit_code: int) -> int:
     directory = Path(directory)
@@ -54,7 +68,8 @@ def finalize_run(host: str, remote_directory: str, directory: Path,
     state = {'run_id': run_id, 'finished_at': utc(),
              'experiment_conclusion': 'not_qualified', 'output_acceptance': 'not_qualified',
              'hash_sync': 'failed', 'service_health': 'unverified', 'push': 'failed',
-             'complete_acceptance': False, 'guardian_exit_code': guardian_exit_code,
+             'engineering_acceptance': False, 'complete_acceptance': False,
+             'guardian_exit_code': guardian_exit_code,
              'errors': []}
     report = {}
     try:
@@ -97,12 +112,8 @@ def finalize_run(host: str, remote_directory: str, directory: Path,
         state['service'] = service
     except Exception as error:
         state['errors'].append('Final verification: ' + str(error))
-    preconditions = bool(
-        guardian_exit_code == 0 and state['hash_sync'] == 'verified'
-        and state['service_health'] == 'verified'
-        and state['output_acceptance'] == 'passed'
-        and report.get('status') == 'engineering_validated'
-        and report.get('event_locality_conclusion') not in (None, 'not_qualified'))
+    engineering_preconditions, strict_preconditions = acceptance_gates(
+        guardian_exit_code, state, report)
     state['push'] = 'pending'
     index_dir = ROOT / 'results/tau3'
     index_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +128,7 @@ def finalize_run(host: str, remote_directory: str, directory: Path,
         summary.write_text('# τ³ workload validation\n\n'
                            f'Run: `{run_id}`  \n'
                            f'Complete acceptance: `{state["complete_acceptance"]}`  \n'
+                           f'Engineering acceptance: `{state["engineering_acceptance"]}`  \n'
                            f'Experiment: `{state["experiment_conclusion"]}`  \n'
                            f'Output: `{state["output_acceptance"]}`  \n'
                            f'Hash synchronization: `{state["hash_sync"]}`  \n'
@@ -140,7 +152,8 @@ def finalize_run(host: str, remote_directory: str, directory: Path,
         state['push'] = 'verified'
         state['initial_push_commit'] = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'],
                                                                 text=True).strip()
-        state['complete_acceptance'] = preconditions
+        state['engineering_acceptance'] = engineering_preconditions
+        state['complete_acceptance'] = strict_preconditions
         publish_files()
         subprocess.run(['git', '-C', str(ROOT), 'add', '--', rel_index, rel_summary], check=True)
         subprocess.run(['git', '-C', str(ROOT), 'commit', '--only', '-m',
@@ -149,10 +162,11 @@ def finalize_run(host: str, remote_directory: str, directory: Path,
                        check=True, timeout=180)
     except Exception as error:
         state['push'] = 'failed'
+        state['engineering_acceptance'] = False
         state['complete_acceptance'] = False
         state['errors'].append('Commit/push: ' + str(error))
     publish_files()
-    return 0 if state['complete_acceptance'] else 1
+    return 0 if state['engineering_acceptance'] else 1
 
 
 if __name__ == '__main__':

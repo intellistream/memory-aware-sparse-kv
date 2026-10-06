@@ -34,6 +34,11 @@ class PodWorker(Worker):
         require(not self.repair and not self.diagnostic_only, 'Pod execution accepts trace-replay only')
         self.model_dir = Path(launch['model_dir'])
         self.workload = launch.get('workload', 'synthetic')
+        self.exploratory_drift = launch.get('exploratory_drift', False)
+        require(type(self.exploratory_drift) is bool and
+                (not self.exploratory_drift or
+                 (self.workload == 'tau3_v1.0.1' and launch.get('reuse_tau3_run'))),
+                'Exploratory drift requires sealed τ³ reuse')
         self.total_seconds = launch.get('total_timeout_seconds', TOTAL_SECONDS)
         self.checkpoint_sync_seconds = 3600 if self.workload == 'tau3_v1.0.1' else 900
         self.reuse_source_run = launch.get('reuse_tau3_run')
@@ -223,6 +228,9 @@ class PodWorker(Worker):
                 seal = verify_seal(self.directory, tokenizer_hash)
                 require(seal['source_run_id'] == self.reuse_source_run,
                         'Precheck source run differs from launch')
+                if getattr(self, 'exploratory_drift', False):
+                    require(seal.get('sealed_pair_reuse') is True,
+                            'Exploratory run requires byte-identical sealed pairs')
             else:
                 self.set_phase_budget('collection_and_pairs', 4 * 3600)
                 executable = self.root / 'runtime/tau3-v1.0.1-venv/bin/python'
@@ -390,6 +398,25 @@ class PodWorker(Worker):
 
     def stable_workload_baseline(self, pairs, profile):
         """Require a stable diagnostic and complete baseline before trace-on."""
+        if self.exploratory_drift:
+            self.set_phase_budget('trace_off', 4 * 3600)
+            candidate = {'id': 'original_fresh',
+                         'command': list(self.original['Config']['Cmd']), 'changes': []}
+            self.selected_config = candidate
+            write_json(self.directory / 'selected-config.json', {
+                **candidate, 'validation_mode': self.validation_mode,
+                'exploratory_drift': True, 'diagnostic_requests': 0,
+                'baseline_requests': 4 * len(pairs['pairs']),
+                'trace_off_and_on_share_configuration': True})
+            path = self.directory / 'trace-off-service'
+            path.mkdir()
+            try:
+                self.start_candidate(candidate, path)
+                return self.requests('trace_off', pairs, profile,
+                                     soft_output_differences=True)
+            finally:
+                self.cleanup()
+                self.wait_release()
         self.set_phase_budget('diagnostics_and_trace_off', 4 * 3600)
         diagnostics = self.directory / 'stability-diagnostics'
         diagnostics.mkdir()
@@ -432,7 +459,7 @@ class PodWorker(Worker):
     def requests(self, stage, pairs, profile, baseline=None, *, soft_output_differences=False):
         rows = super().requests(stage, pairs, profile, baseline,
                                 soft_output_differences=soft_output_differences)
-        if self.workload == 'tau3_v1.0.1':
+        if self.workload == 'tau3_v1.0.1' and not self.exploratory_drift:
             differences = json.loads((self.directory / (stage + '-output-differences.json')).read_text())
             require(not differences, f'{stage} output drift: {len(differences)} differences')
         return rows
@@ -459,14 +486,25 @@ class PodWorker(Worker):
                                   for source in p['history_task_ids']}
             require(not training_sources & evaluation_sources,
                     'τ³ source episodes leak from 8K training into 32K evaluation')
-            for phase in ('trace_off', 'trace_on'):
-                require(not json.loads((self.directory / (phase + '-output-differences.json')).read_text()),
-                        'Repeated or trace-off/on output differs')
+            if not self.exploratory_drift:
+                for phase in ('trace_off', 'trace_on'):
+                    require(not json.loads((self.directory / (phase + '-output-differences.json')).read_text()),
+                            'Repeated or trace-off/on output differs')
             trace = json.loads((self.directory / 'trace-validation.json').read_text())
-            require(trace['repeat_selected_ids_identical'] and
-                    trace['pair_prefix_selected_ids_identical'],
-                    'Native selected sets drift across repetitions or paired prefixes')
-            analyze(self.directory)
+            if not self.exploratory_drift:
+                require(trace['repeat_selected_ids_identical'] and
+                        trace['pair_prefix_selected_ids_identical'],
+                        'Native selected sets drift across repetitions or paired prefixes')
+            locality = analyze(self.directory)
+            if self.exploratory_drift and (
+                trace['paired_effect_interpretation'] == 'exploratory' or
+                any(json.loads((self.directory / (phase + '-output-differences.json')).read_text())
+                    for phase in ('trace_off', 'trace_on'))):
+                locality['observed_overall'] = locality['overall']
+                locality['overall'] = 'exploratory'
+                locality['paired_effect_interpretation'] = 'exploratory'
+                locality['directional_claim_qualified'] = False
+                write_json(self.directory / 'locality.json', locality)
         return True
 
     def contract(self, *, initialize_new_blocks=False):
@@ -497,10 +535,27 @@ class PodWorker(Worker):
                 report['tau3_precheck_summary'] = json.loads(
                     (self.directory / 'tau3-precheck.json').read_text())['summary']
             report['evidence_level'] = 'public τ³ task workload with actual benchmark tool calls'
-            report['strict_output_acceptance'] = 'passed' if status == 'engineering_validated' else 'failed'
+            trace = json.loads((self.directory / 'trace-validation.json').read_text()) if (
+                self.directory / 'trace-validation.json').exists() else {}
+            output_drift = any(report['output_difference_counts'].values())
+            selected_drift = not (
+                trace.get('repeat_selected_ids_identical') and
+                trace.get('pair_prefix_selected_ids_identical'))
+            drift = output_drift or selected_drift
+            report['exploratory_drift'] = self.exploratory_drift
+            report['engineering_evidence_validated'] = status == 'engineering_validated'
+            report['engineering_acceptance'] = False
+            report['engineering_acceptance_pending'] = 'final_hash_sync_service_check_and_push' if status == 'engineering_validated' else None
+            report['strict_output_acceptance'] = ('passed' if status == 'engineering_validated' and not output_drift
+                                                  else 'failed' if output_drift else 'not_qualified')
+            report['complete_acceptance'] = False
             locality = self.directory / 'locality.json'
-            report['event_locality_conclusion'] = (json.loads(locality.read_text())['overall']
+            report['event_locality_conclusion'] = ('exploratory' if drift and status == 'engineering_validated'
+                else json.loads(locality.read_text())['overall']
                 if status == 'engineering_validated' and locality.exists() else 'not_qualified')
+            report['paired_effect_interpretation'] = 'exploratory' if drift else trace.get('paired_effect_interpretation', 'not_qualified')
+            if drift:
+                report['limitations'].append('Observed output or selected-set drift makes paired effects exploratory; no ECHO benefit is claimed.')
             report['echo_mechanism_conclusion'] = 'not_qualified_without_indexer_scores_and_timed_replay'
             report['limitations'][0] = ('8K/32K constructed task chains are workload inputs, '
                                          'not an official τ³ benchmark score.')
