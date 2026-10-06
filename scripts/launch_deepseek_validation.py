@@ -179,13 +179,17 @@ def launch_pod(args, plan, directory, remote_directory):
     transfer_files(args.host,remote_directory,[(directory/n,n) for n in
         ('launch.json','code-provenance.json','implementation.bundle','deployment.json','source-branch.bundle','branch-provenance.json')])
     if bundles:
-        transfer_files(args.host,remote_directory,
-                       [(directory/value['archive'],value['archive']) for value in bundles.values()] +
-                       [(directory/'tau3-bundles.json','tau3-bundles.json')], timeout=1200)
+        for value in bundles.values():
+            retry_sync(lambda value=value: transfer_files(args.host,remote_directory,
+                [(directory/value['archive'],value['archive'])], timeout=1200),
+                attempts=3, delay=15)
+        retry_sync(lambda: transfer_files(args.host,remote_directory,
+            [(directory/'tau3-bundles.json','tau3-bundles.json')]), attempts=3, delay=15)
     if source_archive:
-        transfer_files(args.host,remote_directory,[(directory/source_archive['archive'],source_archive['archive']),
-                        (directory/'tau3-source-inputs-manifest.json','tau3-source-inputs-manifest.json')],
-                       timeout=1200)
+        retry_sync(lambda: transfer_files(args.host,remote_directory,
+            [(directory/source_archive['archive'],source_archive['archive']),
+             (directory/'tau3-source-inputs-manifest.json','tau3-source-inputs-manifest.json')],
+            timeout=1200), attempts=3, delay=15)
     bootstrap='''import hashlib,json,os,pathlib,subprocess,sys,tarfile,urllib.request
 p=pathlib.Path(DIRECTORY)
 for row in FILES:
