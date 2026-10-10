@@ -23,19 +23,22 @@ def parse_positions(value: str) -> tuple[tuple[int, int], ...]:
     return tuple(ranges)
 
 
-def _selected_rows(positions, local_start: int, row_count: int, ranges):
+def _selected_rows(positions, local_start: int, row_count: int, ranges, request_context_len: int):
     rows = []
     for row in range(row_count):
         global_row = local_start + row
         if global_row >= len(positions):
             break
         position = int(positions[global_row])
-        if any(first <= position <= last for first, last in ranges):
+        # CP rounds a chunk up to its rank count. These padded query rows can
+        # still appear in the indexer output but are not request tokens.
+        if position < request_context_len and any(first <= position <= last for first, last in ranges):
             rows.append((row, position))
     return rows
 
 
-def record_prefill_selected(topk, metadata, *, layer_name: str, rank: int) -> None:
+def record_prefill_selected(topk, metadata, *, layer_name: str, rank: int,
+                            topk_values=None) -> None:
     """Copy only configured output rows; leave the native tensor untouched."""
     trace_dir = envs.VLLM_ASCEND_M0A_TRACE_DIR
     if not trace_dir:
@@ -54,15 +57,19 @@ def record_prefill_selected(topk, metadata, *, layer_name: str, rank: int) -> No
         raise RuntimeError("M0-A trace needs prompt-position ranges")
     if topk.ndim < 2:
         raise RuntimeError(f"Unexpected native selected-set shape: {tuple(topk.shape)}")
+    if topk_values is not None and tuple(topk_values.shape) != tuple(topk.shape):
+        raise RuntimeError("Native selected scores do not match selected ID shape")
 
+    prompt_lens = getattr(metadata, 'trace_prompt_lens_cpu', None)
+    request_context_len = int(prompt_lens[0]) if prompt_lens else int(seq_lens[0])
+    if request_context_len <= 0:
+        raise RuntimeError("M0-A trace has an invalid request length")
     local_start = metadata.cp_metadata.local_start
-    rows = _selected_rows(positions, local_start, topk.shape[0], ranges)
+    rows = _selected_rows(positions, local_start, topk.shape[0], ranges, request_context_len)
     if not rows:
         return
 
     request_id = metadata.trace_request_ids[0]
-    prompt_lens = getattr(metadata, 'trace_prompt_lens_cpu', None)
-    request_context_len = int(prompt_lens[0]) if prompt_lens else int(seq_lens[0])
     block_size = metadata.block_size
     run_id = envs.VLLM_ASCEND_M0A_RUN_ID
     if not run_id:
@@ -79,10 +86,11 @@ def record_prefill_selected(topk, metadata, *, layer_name: str, rank: int) -> No
     for group in groups:
         first_row, last_row = group[0][0], group[-1][0]
         copied = topk[first_row : last_row + 1].detach().cpu()
+        copied_values = (topk_values[first_row : last_row + 1].detach().cpu()
+                         if topk_values is not None else None)
         for row, position in group:
             raw_ids = [int(value) for value in copied[row - first_row].reshape(-1).tolist()]
-            records.append(
-                {
+            record = {
                     "schema_version": 1,
                     "run_id": run_id,
                     "request_id": request_id,
@@ -92,7 +100,7 @@ def record_prefill_selected(topk, metadata, *, layer_name: str, rank: int) -> No
                     "cp_local_end": int(metadata.cp_metadata.local_end),
                     "chunk_start_position": int(positions[0]),
                     "chunk_token_count": len(positions),
-                    "chunk_context_len": int(seq_lens[0]),
+                    "chunk_context_len": min(int(seq_lens[0]), request_context_len),
                     "query_global_index": local_start + row,
                     "layer": layer_name,
                     "prompt_position": position,
@@ -109,7 +117,13 @@ def record_prefill_selected(topk, metadata, *, layer_name: str, rank: int) -> No
                     ],
                     "timestamp_ns": time.time_ns(),
                 }
-            )
+            if copied_values is not None:
+                record["score_coverage"] = "topk_only"
+                record["native_selected_scores"] = [
+                    float(value) for value in
+                    copied_values[row - first_row].reshape(-1).tolist()
+                ]
+            records.append(record)
     os.makedirs(trace_dir, exist_ok=True)
     path = os.path.join(trace_dir, f"rank{rank}.jsonl")
     data = "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records)

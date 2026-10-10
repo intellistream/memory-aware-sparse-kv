@@ -237,7 +237,7 @@ class SingleNPUValidationTest(unittest.TestCase):
         def broken():
             calls.append(1)
             raise IOError('unreachable')
-        with self.assertRaisesRegex(RuntimeError, 'three attempts'):
+        with self.assertRaisesRegex(RuntimeError, '3 attempts'):
             retry_sync(broken, delay=0)
         self.assertEqual(len(calls), 3)
 
@@ -339,6 +339,7 @@ class SingleNPUValidationTest(unittest.TestCase):
                     'strict_output_acceptance':'not_qualified','missing_artifacts':[],
                     'completed_requests_per_phase':{'trace_off':48,'trace_on':48},'restoration':restoration}
             write_json(directory/'report.json',report)
+            write_json(directory/'launch.json',{'exploratory_drift':False})
             paths={'report.json','restoration.json','trace-validation.json','sidecar.json',
                    'trace_off-output-differences.json','trace_on-output-differences.json',
                    'implementation.bundle','code-provenance.json','local-archive/final-artifacts.bundle',

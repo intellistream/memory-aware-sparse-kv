@@ -244,6 +244,8 @@ class RepairTests(unittest.TestCase):
     def test_npu_capsule_resets_mutations_and_preserves_aliases_strides_offsets(self):
         import torch
         import torch_npu
+        if not Path('/dev/davinci0').exists():
+            self.skipTest('No NPU device is mounted in this server')
         torch.npu.set_device(0)
         backing=torch.arange(128,dtype=torch.float32).npu()
         a=backing.as_strided((2,3),(16,2),4)

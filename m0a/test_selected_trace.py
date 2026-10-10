@@ -110,6 +110,48 @@ class TraceTest(unittest.TestCase):
                 )
             self.envs.VLLM_ASCEND_M0A_RUN_ID = "test-run"
 
+    def test_cp_padding_is_never_recorded_as_a_request_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.envs.VLLM_ASCEND_M0A_TRACE_DIR = directory
+            self.envs.VLLM_ASCEND_M0A_TRACE_POSITIONS = "8190:8191"
+            topk = FakeTopK([[0] + [-1] * 511, [1] + [-1] * 511])
+            metadata = types.SimpleNamespace(
+                trace_request_ids=("request-1",),
+                trace_positions_cpu=[8190, 8191],
+                trace_seq_lens_cpu=[8192],
+                trace_prompt_lens_cpu=(8191,),
+                cp_metadata=types.SimpleNamespace(local_start=0, local_end=2),
+                block_size=128,
+            )
+            self.trace.record_prefill_selected(
+                topk, metadata, layer_name="model.layers.2", rank=0
+            )
+            records = [json.loads(line) for line in
+                       (Path(directory) / "rank0.jsonl").read_text().splitlines()]
+            self.assertEqual([record["prompt_position"] for record in records], [8190])
+            self.assertEqual(records[0]["request_context_len"], 8191)
+            self.assertEqual(records[0]["chunk_context_len"], 8191)
+
+    def test_selected_scores_are_marked_incomplete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.envs.VLLM_ASCEND_M0A_TRACE_DIR = directory
+            self.envs.VLLM_ASCEND_M0A_TRACE_POSITIONS = "10"
+            topk = FakeTopK([[0, 1]])
+            values = FakeTopK([[2.0, 1.0]])
+            metadata = types.SimpleNamespace(
+                trace_request_ids=("request-1",), trace_positions_cpu=[10],
+                trace_seq_lens_cpu=[11], trace_prompt_lens_cpu=(11,),
+                cp_metadata=types.SimpleNamespace(local_start=0, local_end=1),
+                block_size=128,
+            )
+            self.trace.record_prefill_selected(
+                topk, metadata, layer_name="model.layers.2", rank=0,
+                topk_values=values,
+            )
+            record = json.loads((Path(directory) / "rank0.jsonl").read_text())
+            self.assertEqual(record["score_coverage"], "topk_only")
+            self.assertEqual(record["native_selected_scores"], [2.0, 1.0])
+
 
 if __name__ == "__main__":
     unittest.main()
