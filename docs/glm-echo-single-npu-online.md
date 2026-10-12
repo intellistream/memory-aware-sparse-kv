@@ -1,5 +1,7 @@
 # GLM tiny 单卡 ECHO 风格预取原型
 
+正式实验的完整结果与解释见[独立实验报告](glm-echo-agent-experiment-report.md)。
+
 ## 范围
 
 本实验只检验单张物理 910B2（设备 6、进程内 `npu:0`）上的简化 GLM 原型。`no_offload` 保持原生稀疏注意力；`offload_no_prefetch` 与 `offload_echo_prefetch` 都从固定的 pinned CPU KV 源向每层 3,072 token、16 token 页的 NPU scratch 搬运 KV。后者额外运行 256-bin prefill 与 α=0.5 的 decode EMA 候选规则，每次最多预取 512 token。两种搬运模式在每个目标 query 上计算相同的完整候选分数，并与原生 top-k 逐行核对；原生选择决定保底召回和最终注意力索引。
