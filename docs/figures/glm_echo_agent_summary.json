@@ -1,0 +1,65 @@
+{
+  "panels": {
+    "banking": {
+      "episodes": 21,
+      "controlled": true,
+      "prefill_window_ms": {
+        "baseline": 4418.475409444444,
+        "echo": 5483.22760215873,
+        "relative_percent": 24.09772815388742,
+        "difference": 1064.7521927142857,
+        "ci98_75": [
+          915.3348667936508,
+          1174.676713920635
+        ]
+      },
+      "tpot_ms": {
+        "baseline": 147.34312459918027,
+        "echo": 172.68128661487464,
+        "relative_percent": 17.1967046882046,
+        "difference": 25.338162015694355,
+        "ci98_75": [
+          18.633106741548744,
+          30.11021870715354
+        ]
+      },
+      "throughput_tps": {
+        "baseline": 3.3954087211864405,
+        "echo": 2.803518826622023,
+        "relative_percent": -17.43206615660682
+      }
+    },
+    "retail": {
+      "episodes": 24,
+      "controlled": false,
+      "prefill_window_ms": {
+        "baseline": 4611.329808430555,
+        "echo": 5699.4505829166665,
+        "relative_percent": 23.59668077734931,
+        "difference": 1088.120774486111,
+        "ci98_75": [
+          974.8795347361112,
+          1194.021076263889
+        ]
+      },
+      "tpot_ms": {
+        "baseline": 174.6381090179513,
+        "echo": 210.00079354513304,
+        "relative_percent": 20.249122442998257,
+        "difference": 35.362684527181734,
+        "ci98_75": [
+          29.115583104211638,
+          40.70848324770061
+        ]
+      },
+      "throughput_tps": {
+        "baseline": 3.0400729357609966,
+        "echo": 2.49254814129441,
+        "relative_percent": -18.01025192606206
+      }
+    }
+  },
+  "drift_records": 13,
+  "drift_cases": 10,
+  "measurement_sha256": "5b5319d3fffc30fb8bdbbc4c8a77a1384075945144568c2e9f5e965c1505fe3e"
+}

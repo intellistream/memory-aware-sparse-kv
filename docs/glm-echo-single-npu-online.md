@@ -39,4 +39,15 @@ python3 -m m0a.glm_online_stats \
 
 修正预取候选顺序后，三模式在线烟测 `/root/echo-glm-adapter-smoke-6` 通过所有正确性门槛。两种搬运模式各核对 189 行分数和 378 行 scratch KV/注意力，最大注意力绝对误差为 0；预取模式记录到 6,027,264 字节的本 query 误预取。CPU 全套回归通过 169 项，11 项按环境跳过。
 
-正式运行已由 [启动器](../m0a/launch_glm_formal.sh) 在服务器启动，run ID 为 `20261012T1003Z`，初始 PID 为 `85054`。日志在 `/root/echo-glm-formal-20261012T1003Z.log`；manifest、逐请求 `measurements.jsonl`、压缩 selected-set trace 和最终 `analysis.json` 在 `/root/echo-glm-formal-20261012T1003Z/`。启动时已核验 manifest 的 `formal=true`、`requested_measurements=432`、物理设备 6、输入与调度哈希。**本次正式结果尚未完成，不能据烟测给出性能结论。**
+正式运行由[启动器](../m0a/launch_glm_formal.sh)完成，run ID 为 `20261012T1003Z`。服务器日志在 `/root/echo-glm-formal-20261012T1003Z.log`；manifest、432 行 `measurements.jsonl`、压缩 selected-set trace 和 `analysis.json` 在 `/root/echo-glm-formal-20261012T1003Z/`。耗时 3,910.5 秒。完成标记中的三个文件校验和均通过；测量文件 SHA-256 为 `5b5319d3fffc30fb8bdbbc4c8a77a1384075945144568c2e9f5e965c1505fe3e`。全部请求的固定续写、原生 top-k、KV payload 与注意力等价性门槛通过，最大注意力绝对误差为 0。
+
+![三模式中的两种 KV 搬运模式效率对比](figures/glm_echo_agent_comparison.png)
+
+可下载[SVG 矢量图](figures/glm_echo_agent_comparison.svg)；[绘图脚本](../m0a/plot_glm_online_results.py)从正式测量、manifest 和分析文件重新计算图中均值并校验哈希。图旁的[精确数值](figures/glm_echo_agent_summary.json)来自该脚本，已对照全部 432 条请求。
+
+| 领域与判定 | 32-query prefill 窗口：预取减无预取 | TPOT：预取减无预取 | 请求吞吐均值 |
+| --- | ---: | ---: | ---: |
+| 银行，稳定 21 episode，受控 | +1,064.8 ms（+24.1%；98.75% CI +915.3 至 +1,174.7 ms） | +25.34 ms/token（+17.2%；CI +18.63 至 +30.11 ms） | 3.40 → 2.80 token/s（−17.4%） |
+| 零售，全部 24 episode，探索性 | +1,088.1 ms（+23.6%；CI +974.9 至 +1,194.0 ms） | +35.36 ms/token（+20.2%；CI +29.12 至 +40.71 ms） | 3.04 → 2.49 token/s（−18.0%） |
+
+共有 13 条跨模式 selected-set 漂移记录，涉及 10 个案例，部分行的选中成员确实不同。零售只有 17 个 episode 在所有模式与重复中稳定，低于预注册的 20 个门槛，不能给受控方向结论。银行稳定子集的两项预注册差值区间下界均大于 0，说明**该简化原型在银行 agent 提示中出现有统计支持的方向性性能下降**。吞吐仅作描述性展示，没有预注册显著性判定。以上结果不能用于声称 DeepSeek、真正异步预取或节省 HBM 的融合实现也会下降。
