@@ -9,6 +9,9 @@ __pycache__/
 m0a/runs/
 m0a/artifacts/*
 !m0a/artifacts/glm53_tiny_model_manifest.json
+!m0a/artifacts/glm_tau3_event_cases.json
+!m0a/artifacts/glm_tau3_calibration.json
+!m0a/artifacts/glm_tau3_432_schedule.json
 *.tar
 *.tar.gz
 *.bundle
