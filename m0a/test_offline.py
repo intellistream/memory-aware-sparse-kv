@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,7 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class OfflineTest(unittest.TestCase):
     def test_sealed_baseline_recomputes(self):
-        result = verify(ROOT)
+        archive = Path(os.environ.get('BASELINE_ARCHIVE_ROOT', ROOT))
+        if not (archive / 'results/baseline/matrix/summary.csv').is_file():
+            self.skipTest('Stage 0 measurements are external to this Git tree')
+        result = verify(archive)
         self.assertEqual(result['matrix']['run_count'], 16)
         self.assertEqual(result['matrix']['completed'], 320)
         self.assertEqual(result['matrix']['failed'], 0)

@@ -164,14 +164,16 @@ def render_svg(result, output: Path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument('--output', type=Path, default=Path('m0a/baseline_offline_summary.json'))
-    parser.add_argument('--svg', type=Path, default=Path('m0a/baseline_overview.svg'))
+    parser.add_argument('--output', type=Path, default=Path('m0a/runs/baseline-recheck/summary.json'))
+    parser.add_argument('--svg', type=Path, default=Path('m0a/runs/baseline-recheck/overview.svg'))
     parser.add_argument('--overwrite', action='store_true')
     args = parser.parse_args()
     for path in (args.output, args.svg):
         if path.exists() and not args.overwrite:
             raise FileExistsError(f'Refusing to overwrite {path}')
     result = verify(args.root)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.svg.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + '\n')
     render_svg(result, args.svg)
     print(f"Verified {result['matrix']['run_count']} runs: "

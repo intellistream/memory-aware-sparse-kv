@@ -51,7 +51,7 @@
       "computed_layers": 3,
       "reused_layers": 3,
       "default_pairs": "m0a/workloads/glm53_tiny.synthetic.equalized.pairs.json",
-      "baseline_file": "m0a/baselines/glm53_tiny.json",
+      "baseline_file": "m0a/runs/glm53-baseline/response.jsonl",
       "pilot_kind": "model_baseline",
       "requires_equal_pair_tokens": true
     }
