@@ -12,7 +12,7 @@ from pathlib import Path
 from .echo_workload import sha_ids
 from .glm_agent_cases import EXPECTED_FILES, verify_model
 from .glm_online_adapter import OnlineAdapter
-from .glm_schedule import make_schedule
+from .glm_schedule import verified_schedule
 
 LIMIT_SECONDS = 12 * 60 * 60
 CODE_FILES = ("glm_online_adapter.py", "glm_scratch.py", "glm_live_score.py",
@@ -25,21 +25,21 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def run(cases_path: Path, model_dir: Path, output_dir: Path, *, max_requests: int = 432):
+def run(cases_path: Path, model_dir: Path, output_dir: Path, *,
+        sealed_schedule_path: Path | None = None, max_requests: int = 432):
     if output_dir.exists():
         raise FileExistsError(output_dir)
     if not 1 <= max_requests <= 432:
         raise ValueError("Invalid request limit")
     verify_model(model_dir)
+    repo = Path(__file__).resolve().parents[1]
+    resolved_output = output_dir.resolve()
+    if resolved_output.is_relative_to(repo) and not resolved_output.is_relative_to(repo / "m0a/runs"):
+        raise ValueError("Run output inside this checkout must be under ignored m0a/runs/")
     source = cases_path.read_bytes()
     cases = json.loads(source)
-    order = make_schedule(cases)
+    order = verified_schedule(source, sealed_schedule_path)
     code_dir = Path(__file__).parent
-    schedule_path = code_dir / "artifacts" / "glm_tau3_432_schedule.json"
-    sealed_schedule = json.loads(schedule_path.read_text())
-    if sealed_schedule.get("cases_sha256") != hashlib.sha256(source).hexdigest() or \
-            sealed_schedule.get("requests") != order:
-        raise ValueError("Sealed 432-request schedule drift")
     by_id = {case["case_id"]: case for case in cases["cases"]}
     if len(by_id) != 48:
         raise ValueError("Sealed input case drift")
@@ -54,7 +54,7 @@ def run(cases_path: Path, model_dir: Path, output_dir: Path, *, max_requests: in
                 "model_files": {name: {"size": size, "sha256": sha}
                                 for name, (size, sha) in EXPECTED_FILES.items()},
                 "cases_sha256": hashlib.sha256(source).hexdigest(),
-                "sealed_schedule_sha256": digest(schedule_path),
+                "sealed_schedule_sha256": digest(sealed_schedule_path) if sealed_schedule_path else None,
                 "code_sha256": code_hashes, "max_seconds": LIMIT_SECONDS,
                 "requested_measurements": max_requests}
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -147,9 +147,12 @@ def main():
     parser.add_argument("--cases", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--sealed-schedule", type=Path,
+                        help="Optional external schedule to verify against the generated order")
     parser.add_argument("--max-requests", type=int, default=432)
     args = parser.parse_args()
     print(json.dumps(run(args.cases, args.model, args.output_dir,
+                         sealed_schedule_path=args.sealed_schedule,
                          max_requests=args.max_requests), indent=2))
 
 

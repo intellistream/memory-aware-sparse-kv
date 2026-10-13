@@ -31,6 +31,17 @@ def make_schedule(cases: dict) -> list[dict]:
     return result
 
 
+def verified_schedule(source: bytes, sealed_schedule_path: Path | None = None) -> list[dict]:
+    """Derive the order from input and optionally check an external sealed copy."""
+    order = make_schedule(json.loads(source))
+    if sealed_schedule_path is not None:
+        sealed = json.loads(sealed_schedule_path.read_text())
+        if sealed.get("cases_sha256") != hashlib.sha256(source).hexdigest() or \
+                sealed.get("requests") != order:
+            raise ValueError("Sealed 432-request schedule drift")
+    return order
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cases", type=Path, required=True)
