@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Monitor an archived Pod CPU continuation, mirror hashes, and publish evidence.
+"""Monitor an archived Pod CPU continuation and write run-local evidence.
 
 Run detached from the local checkout after resume_deepseek_pod_cpu.py starts
 on the Pod. This process never changes the serving process or model mount.
@@ -129,20 +129,13 @@ def main() -> int:
                         'manifest_sha256': sha256_file(post / 'sha256-manifest.json'),
                         'verified_at': utc(), 'service_healthy': True}
         write_json(capture / 'postprocess-local-verification.json', verification)
-        doc = ROOT / 'docs/deepseek-pod-validation-result.md'
+        doc = capture / 'postprocess-result.md'
         doc.write_text(result_document(args.run_id, remote_capture, post, report, provenance,
                                        service, verification['manifest_sha256'], verification))
-        branch = subprocess.check_output(['git', '-C', str(ROOT), 'branch', '--show-current'], text=True).strip()
-        require(branch, 'Named branch required for publishing')
-        subprocess.run(['git', '-C', str(ROOT), 'add', str(doc.relative_to(ROOT))], check=True)
-        subprocess.run(['git', '-C', str(ROOT), 'commit', '--only', '-m',
-                        f'Archive DeepSeek Pod engineering result {args.run_id}',
-                        str(doc.relative_to(ROOT))], check=True)
-        subprocess.run(['git', '-C', str(ROOT), 'push', 'origin',
-                        f'HEAD:refs/heads/{branch}'], check=True, timeout=180)
         write_json(state_file, {'run_id': args.run_id, 'status': 'complete', 'finished_at': utc(),
                                 'verified_files': len(records), 'service_healthy': True,
-                                'report': str(post / 'report.json'), 'branch': branch})
+                                'report': str(post / 'report.json'),
+                                'publication': 'not_requested', 'push': 'not_requested'})
         return 0
     except BaseException as error:
         write_json(state_file, {'run_id': args.run_id, 'status': 'failed', 'finished_at': utc(),

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Publish a small terminal report and index after the detached sync guardian."""
+"""Write terminal run evidence after the detached sync guardian."""
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -67,7 +66,8 @@ def finalize_run(host: str, remote_directory: str, directory: Path,
     final = directory / 'final-status.json'
     state = {'run_id': run_id, 'finished_at': utc(),
              'experiment_conclusion': 'not_qualified', 'output_acceptance': 'not_qualified',
-             'hash_sync': 'failed', 'service_health': 'unverified', 'push': 'failed',
+             'hash_sync': 'failed', 'service_health': 'unverified', 'push': 'not_requested',
+             'publication': 'not_requested',
              'engineering_acceptance': False, 'complete_acceptance': False,
              'guardian_exit_code': guardian_exit_code,
              'errors': []}
@@ -112,20 +112,11 @@ def finalize_run(host: str, remote_directory: str, directory: Path,
         state['service'] = service
     except Exception as error:
         state['errors'].append('Final verification: ' + str(error))
-    engineering_preconditions, strict_preconditions = acceptance_gates(
+    state['engineering_acceptance'], state['complete_acceptance'] = acceptance_gates(
         guardian_exit_code, state, report)
-    state['push'] = 'pending'
-    index_dir = ROOT / 'results/tau3'
-    index_dir.mkdir(parents=True, exist_ok=True)
-    index = index_dir / (run_id + '.json')
-    summary = ROOT / 'docs/tau3-latest-result.md'
-    def publish_files():
-        write_json(final, state)
-        write_json(index, {**state, 'local_run_directory': str(directory),
-                           'remote_run_directory': remote_directory,
-                           'report_sha256': sha256_file(directory / 'report.json')
-                               if (directory / 'report.json').exists() else None})
-        summary.write_text('# τ³ workload validation\n\n'
+    summary = directory / 'final-report.md'
+    write_json(final, state)
+    summary.write_text('# τ³ workload validation\n\n'
                            f'Run: `{run_id}`  \n'
                            f'Complete acceptance: `{state["complete_acceptance"]}`  \n'
                            f'Engineering acceptance: `{state["engineering_acceptance"]}`  \n'
@@ -133,39 +124,9 @@ def finalize_run(host: str, remote_directory: str, directory: Path,
                            f'Output: `{state["output_acceptance"]}`  \n'
                            f'Hash synchronization: `{state["hash_sync"]}`  \n'
                            f'Service health: `{state["service_health"]}`  \n'
-                           f'Push: `{state["push"]}`\n\n'
-                           'The local and Pod raw artifacts are linked by the manifest SHA-256 in the index. '
+                           f'Publication: `{state["publication"]}`\n\n'
+                           'The local and Pod raw artifacts are linked by the final manifest SHA-256. '
                            'Offline replay is not an online ECHO performance measurement.\n')
-    publish_files()
-    try:
-        branch_info = json.loads((directory / 'branch-provenance.json').read_text())
-        branch = branch_info['branch']
-        current = subprocess.check_output(['git', '-C', str(ROOT), 'branch', '--show-current'], text=True).strip()
-        if current != branch:
-            raise RuntimeError('Active branch changed during unattended run')
-        rel_index, rel_summary = str(index.relative_to(ROOT)), str(summary.relative_to(ROOT))
-        subprocess.run(['git', '-C', str(ROOT), 'add', '--', rel_index, rel_summary], check=True)
-        subprocess.run(['git', '-C', str(ROOT), 'commit', '--only', '-m',
-                        f'Archive τ³ workload result {run_id}', '--', rel_index, rel_summary], check=True)
-        subprocess.run(['git', '-C', str(ROOT), 'push', 'origin', f'HEAD:refs/heads/{branch}'],
-                       check=True, timeout=180)
-        state['push'] = 'verified'
-        state['initial_push_commit'] = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'],
-                                                                text=True).strip()
-        state['engineering_acceptance'] = engineering_preconditions
-        state['complete_acceptance'] = strict_preconditions
-        publish_files()
-        subprocess.run(['git', '-C', str(ROOT), 'add', '--', rel_index, rel_summary], check=True)
-        subprocess.run(['git', '-C', str(ROOT), 'commit', '--only', '-m',
-                        f'Verify τ³ workload result publication {run_id}', '--', rel_index, rel_summary], check=True)
-        subprocess.run(['git', '-C', str(ROOT), 'push', 'origin', f'HEAD:refs/heads/{branch}'],
-                       check=True, timeout=180)
-    except Exception as error:
-        state['push'] = 'failed'
-        state['engineering_acceptance'] = False
-        state['complete_acceptance'] = False
-        state['errors'].append('Commit/push: ' + str(error))
-    publish_files()
     return 0 if state['engineering_acceptance'] else 1
 
 
