@@ -1,41 +1,12 @@
 # Memory-Aware Sparse KV
 
-This repository studies memory-aware, lossless KV-cache offloading and
-prefetching for native sparse-attention LLM serving.
+研究 agent 状态转移能否提前预测模型原生 sparse attention 选中的 KV，在保持 selected set 和输出不变的条件下减少同步召回。
 
-The starting point is ECHO-style serving: full KV state is host-authoritative,
-while the accelerator retains and recalls only the KV blocks selected by the
-model's native sparse-attention indexer. This project does **not** approximate
-dense attention or replace the model-selected sparse KV set. It asks whether
-agent memory-state transitions can predict that exact set early enough to
-reduce synchronous recall stalls.
+当前进展见 [定性时间线](docs/experiment-progress.md)。Stage 0 和 M0-A 的采集工具链已验证，合成离线回放已通过工程检查。DeepSeek τ³ 的最新真实运行未通过 native trace 校验；GLM 单卡 shadow-KV 原型完成在线受控实验，但不能代表异步预取或 HBM 节省。研究目标尚未验收。
 
-## Research boundary
+- `m0a/`：实验代码、测试、prompt 与固定配置。
+- `scripts/`：DeepSeek 运行和收尾入口。
+- `docs/`：研究合同、运行手册和定性进展。
+- `paper/`、`src/`：论文源文件与机制代码。
 
-- Owner: Hongyi Ruan (`@Lan-Fa`)
-- Baseline: sequential/index-score prefetch for native sparse attention
-- Treatment: memory-state-conditioned residency and lossless prefetch
-- Correctness: identical model-selected KV set and output under matched runs
-- Hardware claims require a complete native execution evidence chain
-
-## Repository structure
-
-- `paper/`: paper source and references
-- `src/`: mechanism implementation
-- `scripts/`: reproducible experiment entry points
-- `results/`: immutable result manifests and raw-result pointers
-- `docs/`: research contract and design records
-
-The first milestone is a necessity study. Implementation expansion is gated on
-showing that tool calls, memory writes, consolidation, or task switches create
-material recall stalls that ECHO-style locality alone cannot hide.
-
-## Current validation state
-
-The preserved DeepSeek validation code is in `m0a/`. Its new `trace-replay`
-mode records output differences separately from hard request and trace
-failures; a successful result would be `engineering_validated`, with strict
-output equivalence marked `not_qualified`. The current checkout has only
-offline tests. The live launcher is blocked until its old Docker deployment
-path is replaced and checked against the rebuilt Kubernetes Pod. See
-[`docs/deepseek-staged-validation-plan.md`](docs/deepseek-staged-validation-plan.md).
+生成的测量、日志、分析、结果索引、图表与校准续写保存在被忽略的运行目录或 HUST 归档，不进入本分支的 Git 文件树。已有公共提交不改写，可按提交历史复核早期记录。运行说明见 [DeepSeek Pod 手册](docs/deepseek-pod-runbook.md) 和 [GLM 手册](docs/glm-echo-single-npu-online.md)。

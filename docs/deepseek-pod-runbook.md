@@ -82,9 +82,9 @@ scores and timed replay are available; these offline results are not online ECHO
 performance measurements.
 
 The local guardian synchronizes every checkpoint and final file by SHA-256. At termination,
-`final-status.json` records separate experiment, output, hash, service and push results.
-Only a complete result passes all gates. Success and failure both produce a lightweight
-Git report/index commit and push; raw logs stay in the local and Pod run directories.
+`final-status.json` records separate experiment, output, hash, service and publication results.
+The finalizer writes `final-report.md` and status only in the ignored local run directory;
+publication and push are `not_requested`. Raw logs stay in the local and Pod run directories.
 The τ³ worker has a 12-hour total limit, with shorter collection, trace and CPU
 stage limits. Final file synchronization has its own deadline and transfers
 compressed batches while verifying the original file hashes.
@@ -100,7 +100,7 @@ gate. Each trace phase still requires 192 valid requests. Output and native
 selected-set differences are retained and mark paired effects exploratory;
 request, token, trace, sidecar and replay errors remain engineering failures.
 `final-status.json` sets `engineering_acceptance` only after final hashes, service
-restoration and publication pass. Drift keeps `complete_acceptance` false. The
+restoration and worker evidence pass. Drift keeps `complete_acceptance` false. The
 result does not claim an ECHO performance benefit.
 
 If all 48+48 requests and native rows were archived but a CPU validator needs a
@@ -123,7 +123,7 @@ To finish an already running CPU continuation without an interactive session,
 start `scripts/finalize_deepseek_pod.py` detached on the local checkout with
 `--run-id`, `--host`, `--remote-root`, and `--deployment` (the independent Pod
 checkout path). It watches the remote manifest, downloads and checks every
-postprocess file, verifies the supervised service, writes
-`docs/deepseek-pod-validation-result.md`, and pushes the result commit to the
-current branch. Read `automation-status.json` and `automation.log` in the
+postprocess file, verifies the supervised service, writes `postprocess-result.md`
+in the ignored local capture directory, and records publication as `not_requested`.
+Read `automation-status.json` and `automation.log` in the
 local run directory for completion or errors.

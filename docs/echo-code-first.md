@@ -1,10 +1,8 @@
 # ECHO agent-workload code phase
 
-Status: 2026-10-10. The isolated server checkout is
-`/root/memecho-echo-code` on branch `feat/echo-ascend-code-first`, based on
-`4d3909ed4556c71a28cdf768a7f1c8093fd052d6`. The recovery checkout
-`/root/memory-aware-sparse-kv` and historical runs are not changed. The
-server currently has no `/dev/davinci*` devices.
+This document records the 2026-10-10 code stage. The active server code path is
+`/root/memory-aware-sparse-kv`; the former isolated checkout is archived. See
+[current progress](experiment-progress.md) for the later GLM online run.
 
 This phase prepares a bounded test of ECHO-style mechanisms on the available
 DeepSeek-V4/Ascend stack. It does not implement the author's NVIDIA system or
@@ -65,7 +63,7 @@ selected-set-only trace as a full score trace.
 CPU checks on the server:
 
 ```bash
-cd /root/memecho-echo-code
+cd /root/memory-aware-sparse-kv
 python3 -m unittest m0a.test_echo_replay m0a.test_echo_runtime \
   m0a.test_echo_workload m0a.test_echo_benchmark \
   m0a.test_echo_diagnostic_source m0a.test_echo_score_reference \
@@ -80,7 +78,7 @@ passed. These results do not exercise the NPU kernel or timed serving path.
 To prepare a schedule from the retained server capture:
 
 ```bash
-cd /root/memecho-echo-code
+cd /root/memory-aware-sparse-kv
 python3 -m m0a.echo_workload \
   --pairs /root/memory-aware-sparse-kv/m0a/runs/deepseek_20261006T051335Z_9ae72511/pairs.json \
   --responses /root/memory-aware-sparse-kv/m0a/runs/deepseek_20261006T051335Z_9ae72511/trace_on-responses.jsonl \

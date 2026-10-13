@@ -119,47 +119,7 @@ Transition Table 的特征为每层 `region_type × age_bucket × 16 个相对�
 
 ## 工程验收结果（2026-09-28）
 
-服务器和本地完整回归均为 **41/41 通过**（原有 18 项 + 新增 23 项）。
-接受运行 `transition_cache_20260928_r03` 使用 64 个训练事件、24 个 eval 事件；eval 来自 3 个独立合成 episode，含成对分支与两次重复。
-输入为单个 GLM profile 层的人工 native trace：88 个请求、2,904 行；总计 1,232 条策略/粒度回放记录、39,424 次 attention 就绪断言。容量 512 字节，每窗口预取上限 256 字节，native 单位人为设为 2 字节。
-
-下表为 eval 每事件平均同步 recall 字节与 micro prediction 指标：
-
-| 策略 | native 同步字节 | page128 同步字节 | native precision / recall | page128 precision / recall |
-|---|---:|---:|---:|---:|
-| `demand_only` | 8.000 | 256.000 | 0.00000 / 0.00000 | 0.00000 / 0.00000 |
-| `sequential_selected_set` | 8.000 | 64.000 | 0.00000 / 0.00000 | 0.02344 / 0.75000 |
-| `region_recency` | 0.000 | 64.000 | 0.03125 / 1.00000 | 0.02344 / 0.75000 |
-| `transition` | 0.000 | 0.000 | 0.03125 / 1.00000 | 0.03125 / 1.00000 |
-| `transition_sequential` | 0.000 | 0.000 | 0.03125 / 1.00000 | 0.03125 / 1.00000 |
-| `shuffled_events` | 1.000 | 85.333 | 0.02734 / 0.87500 | 0.02083 / 0.66667 |
-| `oracle_lookahead` | 0.000 | 0.000 | 1.00000 / 1.00000 | 0.03125 / 1.00000 |
-
-Transition 两个粒度均平均预取 256 字节，其中有效 payload 8 字节、浪费/放大 248 字节。native 无事件 region/recency 同样达到零同步字节，说明该粒度的 fixture 不能证明事件条件有额外收益。目标模式由 fixture 人工设定；这些数字不能支持真实 workload 的 20% 贡献门槛。
-
-Transition 规划 CPU 时间（服务器，毫秒）为：
-
-| 粒度 | p50 | p95 | p99 |
-|---|---:|---:|---:|
-| native | 5.462 | 5.610 | 5.756 |
-| page128 | 3.880 | 3.914 | 3.920 |
-
-完整汇总、全部策略尾部数据、配对差值及独立组区间保存在历史归档 `m0a/artifacts/transition-cache-20260928/report.json`，逐事件记录保存在同目录的 `events.jsonl`。接受运行使用同一 fixture 在本地再次 CLI 回放并比较所有非 CPU 时间结果，验证日志与 SHA-256 随产物保存。
-
-## 同步与归档
-
-所有程序和文档先在 `hust:/workspace/memecho` 修改，每批立即按新增/修改文件清单同步到 `/home/ruan/memecho`，然后核对 SHA-256。持久化同步 helper 在本地执行：
-
-```bash
-python3 scripts/sync_transition_cache.py \
-  m0a/working_set.py m0a/transition_replay.py \
-  m0a/transition_fixture.py m0a/test_transition_replay.py \
-  docs/transition-working-set-cache.md docs/experiment-handoff.md m0a/README.md
-```
-
-helper 只下载显式相对路径，不做删除同步；SSH 禁用配置中的端口转发，避免并行只读连接争抢转发端口。校验失败立即退出；必须恢复同步链路后才能继续服务器修改。`m0a/replay-sync.jsonl` 在服务器追加记录并同步本地，保存 server/local 路径、SHA-256 和 UTC 同步时间；该账本本身不递归记录自己的 hash。运行日志和轻量报告在模块验证后另批同步。最终运行的 `SHA256SUMS` 及本地验证日志随产物保存。
-
-`server-backup-20260926` 继续作为原始封存快照。当前代码、文档与轻量报告进入现有 `code-archive` Git，形成 commit 与完整 bundle。该归档当前没有 remote，GitHub 上传沿用已有授权，在目标仓库地址明确后执行。
+合成 fixture 的离线回放与注意力就绪断言通过工程验收。原始报告、逐事件记录、同步账本和校验和保存在 HUST 归档及旧 Git 历史中。这个 fixture 的目标模式和 KV 字节数均为人工设定；任何同步字节差值都不构成真实工作负载收益。
 
 ## 在线阶段的限制与门槛
 
