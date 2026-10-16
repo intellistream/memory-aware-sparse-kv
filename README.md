@@ -9,4 +9,7 @@
 - `docs/`：研究合同、运行手册和定性进展。
 - `paper/`、`src/`：论文源文件与机制代码。
 
+任务 4 的单卡采集与离线复核见 [GLM 原生 trace 手册](docs/glm-native-trace-audit.md)；
+任务 6 的预测接口与 CPU 回放见 [访问历史预取](docs/access-history-prefetch.md)。
+
 生成的测量、日志、分析、结果索引、图表与校准续写保存在被忽略的运行目录或 HUST 归档，不进入本分支的 Git 文件树。已有公共提交不改写，可按提交历史复核早期记录。运行说明见 [DeepSeek Pod 手册](docs/deepseek-pod-runbook.md) 和 [GLM 手册](docs/glm-echo-single-npu-online.md)。
