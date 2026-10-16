@@ -42,6 +42,11 @@ layers, and lacks MTP. See `docs/glm53-single-npu-prevalidation-report.md`.
 
 ## What can run without NPU
 
+Issue #6 task 6 access-history candidate baselines and their causal CPU replay
+are documented in [access-history-prefetch](../docs/access-history-prefetch.md).
+They compare global/stage frequency, recency and region statistics; prediction
+coverage does not establish transfer savings or online performance.
+
 ### CPU tests and end-to-end synthetic fixture
 
 ```bash
