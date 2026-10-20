@@ -40,12 +40,33 @@ class Cache:
                 record['prefetch_units'] += 1
                 self.pending[block] = record
 
-    def demand(self, selected, record):
+    def demand(self, selected, record, *, locally_generated=None):
         selected = set(selected)
         require(len(selected) <= self.capacity, 'Selected working set exceeds capacity')
+        missing = selected - self.resident.keys()
+        needed = max(0, len(self.resident) + len(missing) - self.capacity)
+        # Moving selected entries never changes the relative LRU order of
+        # non-selected victims. Evict once rather than rescanning protected KV
+        # for every missing token; the resulting residency/order is identical.
+        if needed:
+            victims = []
+            for block in self.resident:
+                if block not in selected:
+                    victims.append(block)
+                    if len(victims) == needed:
+                        break
+            require(len(victims) == needed, 'Selected working set exceeds capacity')
+            for victim in victims:
+                self.resident.pop(victim)
+                origin = self.pending.pop(victim, None)
+                if origin is not None:
+                    origin['wasted_prefetch_units'] += 1
         for block in sorted(selected):
             if self._insert(block, selected):
-                record['sync_recall_units'] += 1
+                if block == locally_generated:
+                    record['local_generated_units'] = record.get('local_generated_units', 0) + 1
+                else:
+                    record['sync_recall_units'] += 1
             origin = self.pending.pop(block, None)
             if origin is not None:
                 origin['useful_prefetch_units'] += 1
@@ -174,10 +195,11 @@ def evaluate(rows, *, capacities=(4096, 8192), budgets=(128, 512), unit_bytes=11
                             'candidate_count': len(candidates), 'selected_count': len(row['selected_blocks']),
                             'candidate_hits': len(set(candidates).intersection(row['selected_blocks'])),
                             'prefetch_units': 0, 'sync_recall_units': 0, 'useful_prefetch_units': 0,
+                            'local_generated_units': 0,
                             'wasted_prefetch_units': 0, 'prediction_ns': prediction_ns,
                             'allocation': allocation}
                         cache.prefetch(candidates, record)
-                        cache.demand(row['selected_blocks'], record)
+                        cache.demand(row['selected_blocks'], record, locally_generated=ctx.position)
                         if predictor is not None:
                             predictor.observe(Observation(ctx.query, row['completion_step'], tuple(row['selected_blocks'])))
                         records.append(record)

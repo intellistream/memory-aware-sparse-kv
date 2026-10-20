@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import hashlib
+import random
 from pathlib import Path
 from dataclasses import replace
 from types import SimpleNamespace
@@ -172,6 +173,46 @@ class Issue6SuiteTests(unittest.TestCase):
         self.assertLessEqual(len(cache.resident), 2)
         with self.assertRaisesRegex(ValueError, 'exceeds capacity'):
             cache.demand([0, 1, 2], metric())
+        local = metric()
+        Cache(2).demand([4], local, locally_generated=4)
+        self.assertEqual(local['sync_recall_units'], 0)
+        self.assertEqual(local['local_generated_units'], 1)
+
+    def test_bulk_eviction_matches_tokenwise_lru_and_transfer_accounting(self):
+        class Reference(Cache):
+            def demand(self, selected, record, *, locally_generated=None):
+                selected = set(selected)
+                for block in sorted(selected):
+                    if self._insert(block, selected):
+                        if block == locally_generated:
+                            record['local_generated_units'] = record.get('local_generated_units', 0) + 1
+                        else:
+                            record['sync_recall_units'] += 1
+                    origin = self.pending.pop(block, None)
+                    if origin is not None:
+                        origin['useful_prefetch_units'] += 1
+                    self.resident.move_to_end(block)
+        rng = random.Random(19)
+        for capacity in (8, 16, 32):
+            candidate, reference = Cache(capacity), Reference(capacity)
+            candidate_records, reference_records = [], []
+            for query in range(100):
+                position = 64 + query
+                selected = rng.sample(range(position), 6)
+                if query % 3 == 0:
+                    selected.append(position)
+                prefetched = rng.sample(range(position), 5)
+                left, right = metric(), metric()
+                candidate_records.append(left)
+                reference_records.append(right)
+                for cache, record in ((candidate, left), (reference, right)):
+                    cache.prefetch(prefetched, record)
+                    cache.demand(selected, record, locally_generated=position)
+                self.assertEqual(list(candidate.resident), list(reference.resident))
+                self.assertEqual(candidate_records, reference_records)
+            candidate.finish()
+            reference.finish()
+            self.assertEqual(candidate_records, reference_records)
 
     def test_transfer_conservation_and_task_cluster_intervals(self):
         summary, tasks, records = evaluate(fixture(), capacities=(8,), budgets=(2,), unit_bytes=4)
