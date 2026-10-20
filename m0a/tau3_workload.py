@@ -93,7 +93,10 @@ def record_user_incoming(incoming, state) -> None:
         state.messages.append(incoming)
 
 
-def collect_episode(domain: str, task, path: Path, *, max_steps: int = 60) -> dict:
+def collect_episode(domain: str, task, path: Path, *, max_steps: int = 60,
+                    model: str = 'dsv4', url: str | None = None,
+                    max_tokens: int = 512, require_success: bool = True,
+                    chat_template_kwargs: dict | None = None) -> dict:
     """Run the pinned τ³ half-duplex protocol through the local DeepSeek API.
 
     Keep the first eligible tool result as the anchor. Retail continues until
@@ -112,13 +115,15 @@ def collect_episode(domain: str, task, path: Path, *, max_steps: int = 60) -> di
     call_counts = {}
     with path.open('w') as out:
         def invoke(actor: str, messages, tools):
-            payload = {'model': 'dsv4', 'messages': to_litellm_messages(messages),
-                       'temperature': 0, 'seed': 0, 'max_tokens': 512,
+            payload = {'model': model, 'messages': to_litellm_messages(messages),
+                       'temperature': 0, 'seed': 0, 'max_tokens': max_tokens,
                        'return_token_ids': True}
+            if chat_template_kwargs is not None:
+                payload['chat_template_kwargs'] = chat_template_kwargs
             if tools:
                 payload.update(tools=[tool.openai_schema for tool in tools], tool_choice='auto')
             started = time.time_ns()
-            result = request(payload)
+            result = request(payload) if url is None else request(payload, url=url)
             finished = time.time_ns()
             message = result['choices'][0]['message']
             require(result.get('usage', {}).get('prompt_tokens', 0) > 0,
@@ -185,20 +190,20 @@ def collect_episode(domain: str, task, path: Path, *, max_steps: int = 60) -> di
             return response
 
         env.get_response = audited_response
-        agent = AuditedAgent(tools=env.get_tools(), domain_policy=env.get_policy(), llm='dsv4')
+        agent = AuditedAgent(tools=env.get_tools(), domain_policy=env.get_policy(), llm=model)
         user_tools = (env.get_user_tools(include=task.user_tools or [])
                       if env.user_tools is not None else None)
-        user = AuditedUser(llm='dsv4', instructions=task.user_scenario,
+        user = AuditedUser(llm=model, instructions=task.user_scenario,
                            tools=user_tools or None)
         orchestrator = Orchestrator(domain=domain, agent=agent, user=user,
                                     environment=env, task=task,
-                                    max_steps=max_steps if domain == 'retail' else 40,
+                                    max_steps=max_steps if domain == 'retail' else min(max_steps, 40),
                                     max_errors=3, seed=0, timeout=240)
         orchestrator.initialize()
         while not orchestrator.done:
             orchestrator.step()
             orchestrator._check_termination()
-            if domain != 'retail' and any(event['eligible'] for event in events):
+            if require_success and domain != 'retail' and any(event['eligible'] for event in events):
                 incoming = orchestrator.message
                 if isinstance(incoming, MultiToolMessage):
                     orchestrator.agent_state.messages.extend(incoming.tool_messages)
@@ -207,13 +212,14 @@ def collect_episode(domain: str, task, path: Path, *, max_steps: int = 60) -> di
                 break
         termination = (orchestrator.termination_reason.name
                        if orchestrator.termination_reason else 'FIRST_ELIGIBLE_TOOL')
-        if domain == 'retail':
+        if require_success and domain == 'retail':
             require(termination in {'AGENT_STOP', 'USER_STOP'},
                     f'Retail conversation did not end naturally: {termination}')
         messages = to_litellm_messages(orchestrator.agent_state.system_messages +
                                        orchestrator.agent_state.messages)
-    require(any(e['eligible'] for e in events),
-            f'No successful single native {"KB_search" if domain == "banking_knowledge" else "tool"} call')
+    if require_success:
+        require(any(e['eligible'] for e in events),
+                f'No successful single native {"KB_search" if domain == "banking_knowledge" else "tool"} call')
     indexes = {call['id']: index for index, message in enumerate(messages)
                for call in (message.get('tool_calls') or [])}
     for event in events:

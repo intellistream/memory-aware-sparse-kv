@@ -5,6 +5,7 @@ import hashlib
 import gzip
 import json
 import re
+import math
 from pathlib import Path
 
 from .history_prefetch import require
@@ -17,7 +18,9 @@ def digest_json(value):
 def targets(case):
     boundary, prompt = case["event_position"], case["prompt_tokens"]
     require(0 < boundary and boundary + 32 < prompt, "Invalid sampled event window")
-    return set(range(boundary - 1, boundary + 32)) | set(range(prompt - 1, prompt + 31))
+    decode_queries = case.get('capture_decode_queries', 31)
+    require(type(decode_queries) is int and 0 <= decode_queries <= 255, 'Invalid decode capture window')
+    return set(range(boundary - 1, boundary + 32)) | set(range(prompt - 1, prompt + decode_queries))
 
 
 def selected_ids(values, position):
@@ -60,6 +63,15 @@ def validate_request(rows, case):
         selected_ids(row["raw_selected_ids"], position)
         require(row["indexer_selected_sha256"] == digest_json(row["raw_selected_ids"]),
                 "Indexer/attention selected set mismatch")
+        if 'full_scores' in row:
+            scores = row['full_scores']
+            selected = set(selected_ids(row['raw_selected_ids'], position))
+            require(row.get('score_source_kind') == 'native_inputs_full_reference_checked_against_topk'
+                    and len(scores) == position + 1 and all(math.isfinite(s) for s in scores),
+                    'Incomplete/nonfinite native score reference')
+            floor = min(scores[i] for i in selected)
+            require(all(s <= floor + 1e-4 for i, s in enumerate(scores) if i not in selected),
+                    'Full score reference differs from native selection')
     require(seen == expected, "Missing native layer/query rows, including predecessors")
     for (layer, position), row in by_key.items():
         source = by_key[(min(layer, 2), position)]
@@ -108,13 +120,15 @@ def audit_repeats(requests, *, repeats):
 
 
 class NativeCapture:
-    def __init__(self):
+    def __init__(self, *, capture_full_scores=False):
+        self.capture_full_scores = capture_full_scores
         self.case = None
         self.rows = []
         self.indexer_rows = {}
 
     def begin(self, case):
         self.case, self.rows, self.indexer_rows = case, [], {}
+        self.indexer_scores = {}
 
     def _batch(self, metadata, query_rows, seq_q, seq_key):
         require(metadata.block_table.shape[0] == 1, "Capture requires one request")
@@ -138,6 +152,14 @@ class NativeCapture:
             if capture.case is not None:
                 start, _, _, _ = capture._batch(metadata, int(q.shape[0]), seq_q, seq_key)
                 layer = layer_number(str(impl.layer_name))
+                positions = sorted(p for p in targets(capture.case) if start <= p < start + q.shape[0])
+                if capture.capture_full_scores and positions:
+                    require(not c8 and scale is None, 'Full score capture requires pinned BF16 indexer')
+                    from .glm_live_score import verify_rows
+                    verified = verify_rows(q, weights, cache[2], metadata.block_table, output,
+                                           query_start=start, rows=[p - start for p in positions])
+                    for pos, scores in verified.items():
+                        capture.indexer_scores[(layer, pos)] = scores.detach().cpu().tolist()
                 for pos in sorted(targets(capture.case)):
                     if start <= pos < start + q.shape[0]:
                         key = (layer, pos)
@@ -163,6 +185,9 @@ class NativeCapture:
                             "capture_site": "attention_entry", "indexer_source_layer": min(layer, 2),
                             "indexer_selected_sha256": digest_json(source), "raw_selected_ids": ids,
                             "actual_seq_lengths_query": q_lengths, "actual_seq_lengths_key": k_lengths})
+                        if capture.capture_full_scores:
+                            capture.rows[-1]['full_scores'] = capture.indexer_scores[(min(layer, 2), pos)]
+                            capture.rows[-1]['score_source_kind'] = 'native_inputs_full_reference_checked_against_topk'
             return native_attention(impl, q, rope, cache, topk, metadata, seq_q, seq_key, **kwargs)
 
         DeviceOperator.indexer_select_post_process = staticmethod(indexer)
