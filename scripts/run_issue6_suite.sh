@@ -71,9 +71,11 @@ done
 (
   tau_env
   python -m m0a.issue6_workload --tau-source "$TAU3_SOURCE" \
-    --output "$RUN/agent" --max-tokens 512 --reasoning-effort low
+    --output "$RUN/agent" --max-tokens 512 --max-tokens-ceiling 8192 \
+    --episode-timeout 900 --reasoning-effort low
   python -m m0a.issue6_agent_probe --tau-source "$TAU3_SOURCE" \
-    --materials "$RUN/agent/prompt-material.jsonl" --output "$RUN/agent-probe"
+    --materials "$RUN/agent/prompt-material.jsonl" --output "$RUN/agent-probe" \
+    --max-tokens 512 --max-tokens-ceiling 8192
 ) > "$RUN/agent.log" 2>&1
 cleanup
 (

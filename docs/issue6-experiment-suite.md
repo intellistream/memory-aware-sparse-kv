@@ -44,9 +44,11 @@ NumPy 1.26.4 和 ContourPy 1.3.2，
 ```bash
 # 在激活的固定 tau3 环境中，已有本地 GLM 服务时：
 python -m m0a.issue6_workload --tau-source "$TAU3_SOURCE" \
-  --output m0a/runs/agent-NEW --max-tokens 512 --reasoning-effort low
+  --output m0a/runs/agent-NEW --max-tokens 512 --max-tokens-ceiling 8192 \
+  --episode-timeout 900 --reasoning-effort low
 python -m m0a.issue6_agent_probe --tau-source "$TAU3_SOURCE" \
-  --materials m0a/runs/agent-NEW/prompt-material.jsonl --output m0a/runs/probe-NEW
+  --materials m0a/runs/agent-NEW/prompt-material.jsonl --output m0a/runs/probe-NEW \
+  --max-tokens 512 --max-tokens-ceiling 8192
 
 # 关闭模型服务后，激活固定原生环境，设置本次可见性：
 python -m m0a.issue6_capture --materials m0a/runs/agent-NEW/prompt-material.jsonl \
