@@ -1,5 +1,8 @@
 # Memory-Aware Sparse KV
 
+Issue #6 任务 1–10 的统一协议、运行入口与验收边界见
+[集成实验手册](docs/issue6-experiment-suite.md) 和 [实验协议](docs/issue6-experiment-protocol.md)。
+
 研究 agent 状态转移能否提前预测模型原生 sparse attention 选中的 KV，在保持 selected set 和输出不变的条件下减少同步召回。
 
 当前进展见 [定性时间线](docs/experiment-progress.md)。Stage 0 和 M0-A 的采集工具链已验证，合成离线回放已通过工程检查。DeepSeek τ³ 的最新真实运行未通过 native trace 校验；GLM 单卡 shadow-KV 原型完成在线受控实验，但不能代表异步预取或 HBM 节省。研究目标尚未验收。

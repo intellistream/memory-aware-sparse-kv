@@ -110,6 +110,17 @@ class NativeTraceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Shared layer"):
             validate_request(rows, CASE)
 
+    def test_optional_full_score_reference_is_independently_checked(self):
+        rows = fixture()
+        for row in rows:
+            selected = set(row['raw_selected_ids'])
+            row['full_scores'] = [2.0 if b in selected else 0.0 for b in range(row['position'] + 1)]
+            row['score_source_kind'] = 'native_inputs_full_reference_checked_against_topk'
+        validate_request(rows, CASE)
+        rows[0]['full_scores'][3000] = 99
+        with self.assertRaisesRegex(ValueError, 'differs from native'):
+            validate_request(rows, CASE)
+
     def test_stability_preserves_changed_set_and_order_separately(self):
         rows = fixture()
         altered = copy.deepcopy(rows)
