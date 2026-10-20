@@ -244,7 +244,10 @@ class Issue6SuiteTests(unittest.TestCase):
             finally:
                 for child in (owned, unrelated):
                     if child.poll() is None:
-                        child.terminate()
+                        # The assertions above verify selective graceful cleanup.
+                        # Always reap our own fixture children even if imported
+                        # runtime libraries changed inherited SIGTERM handling.
+                        child.kill()
                     child.wait(timeout=5)
 
     def test_native_cli_requires_matching_audit_and_explicit_instability_opt_in(self):
