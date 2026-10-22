@@ -40,6 +40,13 @@ class Cache:
                 record['prefetch_units'] += 1
                 self.pending[block] = record
 
+    def generate(self, blocks, record):
+        """New compressed KV consumes capacity even when native top-k omits it."""
+        for block in blocks:
+            require(block not in self.resident, 'Locally generated KV already resident')
+            self._insert(block, set())
+            record['local_generated_units'] = record.get('local_generated_units', 0) + 1
+
     def demand(self, selected, record, *, locally_generated=None):
         selected = set(selected)
         require(len(selected) <= self.capacity, 'Selected working set exceeds capacity')
@@ -148,10 +155,21 @@ def locality(lanes):
             for (task, variant), g in sorted(groups.items())]
 
 
-def evaluate(rows, *, capacities=(4096, 8192), budgets=(128, 512), unit_bytes=1152,
-             strategies=STRATEGIES):
+def evaluate(rows, *, capacities=(4096, 8192), budgets=(128, 512), unit_bytes=None,
+             strategies=None):
     started = time.perf_counter_ns()
     lanes = validate(rows)
+    compressed = rows[0]['schema_version'] == 2
+    if unit_bytes is None:
+        unit_bytes = rows[0]['unit_bytes'] if compressed else 1152
+    require(type(unit_bytes) is int and unit_bytes > 0, 'Invalid KV unit byte size')
+    require(not compressed or all(r['unit_bytes'] == unit_bytes for r in rows),
+            'Unit byte size differs from captured compressed KV layout')
+    unsupported = {} if all(r.get('scores') is not None for r in rows) else {
+        'echo_style': 'Full current native indexer scores are unavailable; selected-only traces are insufficient'}
+    strategies = tuple(s for s in STRATEGIES if s not in unsupported) if strategies is None else tuple(strategies)
+    require(strategies and not set(strategies).intersection(unsupported),
+            'Requested strategy requires unavailable full current native scores')
     training = [r for r in rows if r['split'] == 'train']
     test = [r for r in rows if r['split'] == 'test']
     require(training and test, 'Training and held-out test tasks required')
@@ -199,17 +217,26 @@ def evaluate(rows, *, capacities=(4096, 8192), budgets=(128, 512), unit_bytes=11
                             'wasted_prefetch_units': 0, 'prediction_ns': prediction_ns,
                             'allocation': allocation}
                         cache.prefetch(candidates, record)
-                        cache.demand(row['selected_blocks'], record, locally_generated=ctx.position)
+                        local = row['locally_generated_ids'] if compressed else [ctx.position]
+                        if compressed:
+                            cache.generate(local, record)
+                        cache.demand(row['selected_blocks'], record,
+                                     locally_generated=local[0] if local and not compressed else None)
                         if predictor is not None:
                             predictor.observe(Observation(ctx.query, row['completion_step'], tuple(row['selected_blocks'])))
                         records.append(record)
                     cache.finish()
     summary, per_task = summarize(records, unit_bytes)
     return {'schema_version': 1, 'source_kind': rows[0]['source_kind'],
+            'trace_schema_version': rows[0]['schema_version'],
             'source_scopes': sorted({r.get('source_scope', 'synthetic_fixture') for r in rows}),
             'autonomous_agent_validated': False,
             'evaluation': 'offline_equal_capacity_LRU_simulation', 'cache_initialization': 'empty_per_request_layer_decode_window',
-            'unit': 'native_kv_token', 'unit_bytes': unit_bytes, 'phase': 'decode',
+            'unit': rows[0]['unit'], 'unit_bytes': unit_bytes, 'phase': 'decode',
+            'attention_scope': rows[0].get('attention_scope', 'native_indexed_KV'),
+            'unsupported_strategies': unsupported,
+            'capacity_bytes_per_lane': [c * unit_bytes for c in capacities],
+            'prefetch_budget_bytes_per_query': [b * unit_bytes for b in budgets],
             'capacities': capacities, 'budgets': budgets, 'strategies': strategies,
             'training_tasks': event.tasks, 'validation_tasks': sorted({r['task_id'] for r in rows if r['split'] == 'validation'}),
             'test_tasks': sorted({r['task_id'] for r in test}),
@@ -227,7 +254,8 @@ def evaluate(rows, *, capacities=(4096, 8192), budgets=(128, 512), unit_bytes=11
                 'event_unconditioned': [{'key': list(key), 'region_counts': counts.tolist()} for key, counts in sorted(event.global_counts.items())],
                 'lsa': {'vocabulary': semantic.vocabulary, 'idf': semantic.idf.tolist(),
                         'projection': semantic.projection.tolist()}},
-            'echo_scope': 'decode EMA threshold on verified full current scores; no score-stream timing or prefill claim',
+            'echo_scope': ('unavailable_selected_only' if 'echo_style' in unsupported else
+                           'decode EMA threshold on verified full current scores; no score-stream timing or prefill claim'),
             'online_performance_validated': False, 'transfer_bytes_are_simulated': True,
             'summary': summary}, per_task, records
 
@@ -250,7 +278,7 @@ def plot(summary, output):
         axis.bar(range(len(rows)), values, yerr=errors, capsize=2)
         axis.set_xticks(range(len(rows)), [r['strategy'] for r in rows], rotation=70, ha='right', fontsize=8)
         axis.set_title(metric)
-    fig.suptitle(f'Offline controlled replay: C={capacity} tokens/layer, P={budget}; task-cluster 95% CI\nNot an autonomous Agent benchmark or online performance result')
+    fig.suptitle(f'Offline controlled replay: C={capacity} {summary["unit"]}/lane, P={budget}; task-cluster 95% CI\nNot an autonomous Agent benchmark or online performance result')
     fig.savefig(output / 'comparison.png', dpi=150)
     fig.savefig(output / 'comparison.pdf')
     plt.close(fig)
@@ -262,7 +290,10 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--capacity', type=int, action='append')
     parser.add_argument('--budget', type=int, action='append')
-    parser.add_argument('--unit-bytes', type=int, default=1152)
+    parser.add_argument('--unit-bytes', type=int)
+    parser.add_argument('--capacity-bytes', type=int, action='append')
+    parser.add_argument('--budget-bytes', type=int, action='append')
+    parser.add_argument('--strategy', choices=STRATEGIES, action='append')
     parser.add_argument('--native-audit', type=Path)
     parser.add_argument('--include-unstable', action='store_true')
     args = parser.parse_args()
@@ -281,8 +312,19 @@ def main():
                 audit['decode_rows'] == len(rows), 'Native input differs from audited archive')
         require(audit['fixed_selected_sets_stable'] or args.include_unstable,
                 'Unstable native data: explicitly opt in without dropping samples')
-    summary, per_task, records = evaluate(rows, capacities=args.capacity or (4096, 8192),
-        budgets=args.budget or (128, 512), unit_bytes=args.unit_bytes)
+    require(not (args.capacity and args.capacity_bytes) and not (args.budget and args.budget_bytes),
+            'Specify either KV units or bytes, not both')
+    unit_bytes = (args.unit_bytes if args.unit_bytes is not None else
+                  rows[0].get('unit_bytes', 1152) if rows else 1152)
+    require(type(unit_bytes) is int and unit_bytes > 0, 'Invalid KV unit byte size')
+    def units(values):
+        require(all(v >= 0 and v % unit_bytes == 0 for v in values),
+                'Byte budgets must be exact multiples of the KV unit size')
+        return tuple(v // unit_bytes for v in values)
+    summary, per_task, records = evaluate(rows,
+        capacities=units(args.capacity_bytes) if args.capacity_bytes else args.capacity or (4096, 8192),
+        budgets=units(args.budget_bytes) if args.budget_bytes else args.budget or (128, 512),
+        unit_bytes=unit_bytes, strategies=args.strategy)
     summary['input_sha256'] = hashlib.sha256(args.trace.read_bytes()).hexdigest()
     summary['native_audit'] = json.loads(args.native_audit.read_text()) if args.native_audit else None
     model_path = args.output / 'fitted-models.json'
