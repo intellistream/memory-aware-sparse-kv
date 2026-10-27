@@ -1,5 +1,7 @@
 # issue6：DeepSeek 模拟器机制、必要验证项与八卡实验边界
 
+2026-10-27 补充：[本轮 CPU 验收、长上下文结果与逐项状态](issue6-cpu-acceptance-20261027.md)。下文保留 2026-10-22 实验口径。
+
 更新日期：2026-10-22。目标模型：共享只读目录 `/models/DeepSeek-V4-Flash-W8A8`。本次依据 [issue6 原文](https://github.com/intellistream/memory-aware-sparse-kv/issues/6)，快照见 [requirements snapshot](issue6-requirements-snapshot-20261022.json)。
 
 ## 1. 首先明确要证明什么
