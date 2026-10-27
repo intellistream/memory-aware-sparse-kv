@@ -39,7 +39,7 @@ def compact(result):
     hidden=0
     for t in result['transfers']:
         if t['reason']=='prefetch':
-            matching=[r for r in result['records'] if r['rank']==t['rank'] and r['query']==t['query']]
+            matching=[r for r in result['records'] if r['rank']==t['rank'] and r['step']==t['step']]
             if matching:
                 r=matching[0]
                 hidden+=max(0,min(t['end_us'],r['native_ready_us'])-max(t['start_us'],r['begin_us']))

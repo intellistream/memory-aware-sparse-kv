@@ -108,7 +108,7 @@ class Fabric:
                       range(1 if config.host_link == 'shared' else config.ranks)]
         self.events = []
 
-    def transfer(self, rank, keys, direction, reason, query, on_start=None):
+    def transfer(self, rank, keys, direction, reason, query, on_start=None, step=None, namespace=None):
         link_id = 0 if self.cfg.host_link == 'shared' else rank
         queued = self.env.now
         with self.links[link_id].request(priority=1 if reason == 'prefetch' else 0) as request:
@@ -120,7 +120,7 @@ class Fabric:
             duration, source = self.profile.duration(direction, size,
                 self.cfg.launch_us + size/(self.cfg.bandwidth_GBs*1000))
             factor = self.cfg.rank_slowdown[rank] if self.cfg.rank_slowdown else 1
-            event = dict(rank=rank, link=link_id, query=query, direction=direction, reason=reason,
+            event = dict(rank=rank, link=link_id, query=query, step=step, namespace=list(namespace) if namespace else None, direction=direction, reason=reason,
                          units=list(keys), bytes=size, queued_us=queued, start_us=start,
                          end_us=start+duration*factor, cost_source=source, used_units=[])
             self.events.append(event)
@@ -180,7 +180,7 @@ class SlotCache:
         value = self.host_payload(key)
         return value.clone() if hasattr(value, 'clone') else deepcopy(value)
 
-    def fetch(self, keys, reason, query):
+    def fetch(self, keys, reason, query, step=None):
         # Chunk reservation is atomic; another worker can request the same key.
         created = yield self.env.process(self.reserve(keys))
         if created:
@@ -188,7 +188,7 @@ class SlotCache:
                 for key in created:
                     self.entries[key]['state'] = 'inflight'
                     self.log(key, 'inflight')
-            event = yield self.env.process(self.fabric.transfer(self.rank, created, 'h2d', reason, query, started))
+            event = yield self.env.process(self.fabric.transfer(self.rank, created, 'h2d', reason, query, started, step, self.namespace))
             event['namespace'] = list(self.namespace)
             event['stale_on_completion'] = not self.valid
             for key in created:
@@ -246,10 +246,12 @@ def replay(steps, config=AsyncConfig(), profile=None, payload_provider=None, att
     """
     config.validate()
     check(steps, 'Empty schedule')
-    last = {}
+    last, active_versions, retired_versions = {}, {}, set()
     for step in steps:
         check(len(step)==config.ranks, 'Missing rank')
-        identity = {(w['row']['request_id'],w['row']['context_version'],w['row']['layer'],w['row']['query']) for w in step}
+        identity = {tuple(w['row'][key] for key in
+                    ('task_id','run_id','request_id','context_version','layer','phase','query','token_position'))
+                    for w in step}
         check(len(identity)==1, 'Rank group query mismatch')
         for rank, work in enumerate(step):
             row, candidates = work['row'], work['candidates']
@@ -258,6 +260,12 @@ def replay(steps, config=AsyncConfig(), profile=None, payload_provider=None, att
             check(row['eligible_end']==position//4 and row['position']==(position+1)//4-1 and
                   row['locally_generated_ids']==list(range(position//4,(position+1)//4)), 'C4 causal boundary mismatch')
             ns = context(row).namespace
+            owner = (row['task_id'],row['run_id'],row['request_id'],rank,row['layer'],row['phase'])
+            prior = active_versions.get(owner)
+            if prior is not None and prior != ns:
+                retired_versions.add(prior)
+            check(ns not in retired_versions, 'Retired context version cannot be reused')
+            active_versions[owner] = ns
             if ns in last:
                 check((row['query'],position)==(last[ns][0]+1,last[ns][1]+1), 'Noncontiguous replay')
             last[ns] = (row['query'],position)
@@ -272,6 +280,8 @@ def replay(steps, config=AsyncConfig(), profile=None, payload_provider=None, att
     profile = profile or CostProfile()
     if profile.data is not None:
         check(profile.data['parallel_ranks']==config.ranks, 'Profile parallelism mismatch')
+        check(profile.data['model']==config.model and profile.data['device']==config.device,
+              'Profile model/device mismatch at replay')
     fabric = Fabric(env, config, profile)
     caches, active, records, collectives, background = {}, {}, [], [], []
 
@@ -313,7 +323,7 @@ def replay(steps, config=AsyncConfig(), profile=None, payload_provider=None, att
                 # Cancel unsent speculative chunks after the native result arrives.
                 if state['native_known'] or not cache.valid:
                     break
-                yield env.process(cache.fetch(candidates[start:start+config.chunk_units], 'prefetch', row['query']))
+                yield env.process(cache.fetch(candidates[start:start+config.chunk_units], 'prefetch', row['query'], step_id))
 
         background.append(env.process(prefetch()))
         yield env.timeout(native)
@@ -326,12 +336,12 @@ def replay(steps, config=AsyncConfig(), profile=None, payload_provider=None, att
         yield env.process(cache.generate([k for k in local if k in cache.protected]))
         writeback = None
         if local:
-            writeback = env.process(fabric.transfer(rank, local, 'd2h', 'write_through', row['query']))
+            writeback = env.process(fabric.transfer(rank, local, 'd2h', 'write_through', row['query'], step=step_id, namespace=namespace))
         # Pack missing IDs rather than charging launches for chunks containing
         # mostly resident entries. Join existing reservations without reloading.
         missing = [key for key in selected if key not in cache.entries]
         for start in range(0, len(missing), config.chunk_units):
-            yield env.process(cache.fetch(missing[start:start+config.chunk_units], 'demand', row['query']))
+            yield env.process(cache.fetch(missing[start:start+config.chunk_units], 'demand', row['query'], step_id))
         yield simpy.AllOf(env, [cache.entries[key]['ready'] for key in selected])
         rec['attention_start_us'] = env.now
         payloads = cache.read(selected)

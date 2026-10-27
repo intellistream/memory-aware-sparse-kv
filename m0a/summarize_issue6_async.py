@@ -28,12 +28,15 @@ def main():
             checked['rank_queries']+=1
         for event in data['transfers']:
             assert event['queued_us']<=event['start_us']<=event['end_us']
+            owners=[r for r in data['records'] if r['rank']==event['rank'] and r['step']==event['step']]
+            assert len(owners)==1, 'Ambiguous transfer owner'
+            assert event['namespace']==owners[0]['namespace'], 'Transfer namespace mismatch'
             assert event['bytes']==len(event['units'])*1024
             assert set(event['used_units'])<=set(event['units'])
             if event['direction']=='h2d':
                 assert event['bytes']==event['useful_bytes']+event['unused_bytes']
             if event['reason']=='prefetch':
-                row=next(r for r in data['records'] if r['rank']==event['rank'] and r['query']==event['query'])
+                row=next(r for r in data['records'] if r['rank']==event['rank'] and r['step']==event['step'])
                 assert event['start_us']>=row['prediction_ready_us']
             checked['transfers']+=1
         for link in {e['link'] for e in data['transfers']}:
