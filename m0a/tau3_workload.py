@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from .contracts import EVENT_TYPES, validate_pair_set
+from .chat_generation import generate_chat
 from .deepseek_validation import write_json
 from .import_workloads import sha_ids
 from .run_requests import request
@@ -96,7 +97,9 @@ def record_user_incoming(incoming, state) -> None:
 def collect_episode(domain: str, task, path: Path, *, max_steps: int = 60,
                     model: str = 'dsv4', url: str | None = None,
                     max_tokens: int = 512, require_success: bool = True,
-                    chat_template_kwargs: dict | None = None) -> dict:
+                    chat_template_kwargs: dict | None = None,
+                    max_tokens_ceiling: int | None = None,
+                    episode_timeout: int = 240) -> dict:
     """Run the pinned τ³ half-duplex protocol through the local DeepSeek API.
 
     Keep the first eligible tool result as the anchor. Retail continues until
@@ -122,20 +125,27 @@ def collect_episode(domain: str, task, path: Path, *, max_steps: int = 60,
                 payload['chat_template_kwargs'] = chat_template_kwargs
             if tools:
                 payload.update(tools=[tool.openai_schema for tool in tools], tool_choice='auto')
-            started = time.time_ns()
-            result = request(payload) if url is None else request(payload, url=url)
-            finished = time.time_ns()
+            def audited_attempt(current, result, attempt):
+                require(result.get('usage', {}).get('prompt_tokens', 0) > 0,
+                        'Missing actual prompt token usage')
+                prompt_ids = result.get('prompt_token_ids')
+                require(isinstance(prompt_ids, list) and
+                        len(prompt_ids) == result['usage']['prompt_tokens'],
+                        'Missing or inconsistent actual prompt token IDs')
+                out.write(json.dumps({'kind': 'model', 'actor': actor, 'domain': domain,
+                    'task_id': task.id, 'started_ns': attempt['started_ns'],
+                    'finished_ns': attempt['finished_ns'], 'generation_attempt': attempt,
+                    'request': current, 'response': result}, ensure_ascii=False) + '\n')
+                out.flush()
+            send = lambda current: request(current) if url is None else request(current, url=url)
+            if max_tokens_ceiling is not None:
+                result = generate_chat(payload, request_fn=send,
+                                       max_tokens_ceiling=max_tokens_ceiling, audit=audited_attempt)
+            else:
+                started = time.time_ns()
+                result = send(payload)
+                audited_attempt(payload, result, {'started_ns': started, 'finished_ns': time.time_ns()})
             message = result['choices'][0]['message']
-            require(result.get('usage', {}).get('prompt_tokens', 0) > 0,
-                    'Missing actual prompt token usage')
-            prompt_ids = result.get('prompt_token_ids')
-            require(isinstance(prompt_ids, list) and
-                    len(prompt_ids) == result['usage']['prompt_tokens'],
-                    'Missing or inconsistent actual prompt token IDs')
-            out.write(json.dumps({'kind': 'model', 'actor': actor, 'domain': domain,
-                                  'task_id': task.id, 'started_ns': started, 'finished_ns': finished,
-                                  'request': payload, 'response': result}, ensure_ascii=False) + '\n')
-            out.flush()
             calls = message.get('tool_calls') or []
             for call in calls:
                 call_counts[call['id']] = len(calls)
@@ -198,7 +208,7 @@ def collect_episode(domain: str, task, path: Path, *, max_steps: int = 60,
         orchestrator = Orchestrator(domain=domain, agent=agent, user=user,
                                     environment=env, task=task,
                                     max_steps=max_steps if domain == 'retail' else min(max_steps, 40),
-                                    max_errors=3, seed=0, timeout=240)
+                                    max_errors=3, seed=0, timeout=episode_timeout)
         orchestrator.initialize()
         while not orchestrator.done:
             orchestrator.step()

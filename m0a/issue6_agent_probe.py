@@ -5,9 +5,12 @@ from pathlib import Path
 from .issue6_workload import write
 from .tau3_workload import verify_tau
 from .run_requests import request
+from .chat_generation import ChatGenerationError, generate_chat
 
 
 def run(args):
+    if not 0 < args.max_tokens <= args.max_tokens_ceiling:
+        raise ValueError('Require 0 < max_tokens <= max_tokens_ceiling')
     args.output.mkdir(parents=True, exist_ok=False)
     source = verify_tau(args.tau_source)
     tasks = {(domain, task.id): task for domain, entries in source['tasks'].items() for task in entries}
@@ -25,19 +28,28 @@ def run(args):
         messages, calls, successful, reads = list(material['messages']), 0, 0, 0
         log = args.output / (domain + '-' + task_id + '.jsonl')
         status = 'max_steps'
+        generation_failure = None
         with log.open('w', encoding='utf-8') as stream:
             for step in range(args.max_steps):
                 payload = {'model': 'glm-tiny', 'messages': messages, 'tools': material['tools'],
                     'tool_choice': 'auto', 'max_tokens': args.max_tokens, 'temperature': 0, 'seed': 7,
                     'return_token_ids': True, 'chat_template_kwargs': {'reasoning_effort': 'low'}}
                 try:
-                    response = request(payload, url=args.url)
+                    def audit(current, response, attempt):
+                        stream.write(json.dumps({'step': step, 'request': current,
+                            'response': response, 'generation_attempt': attempt}) + '\n')
+                        stream.flush()
+                    response = generate_chat(payload,
+                        request_fn=lambda current: request(current, url=args.url),
+                        max_tokens_ceiling=args.max_tokens_ceiling, audit=audit)
+                except ChatGenerationError as error:
+                    generation_failure = error.details
+                    status = error.details['reason']
+                    break
                 except Exception as error:
                     stream.write(json.dumps({'error': f'{type(error).__name__}: {error}', 'request': payload}) + '\n')
                     status = 'request_failed'
                     break
-                stream.write(json.dumps({'step': step, 'request': payload, 'response': response}) + '\n')
-                stream.flush()
                 if any(m['role'] == 'tool' for m in messages):
                     reads += 1
                 message = response['choices'][0]['message']
@@ -62,7 +74,10 @@ def run(args):
         record = {'task_id': material['task_id'], 'status': status, 'agent_tool_calls': calls,
                   'successful_agent_tool_calls': successful, 'post_tool_model_decisions': reads,
                   'probe_kind': 'scenario-disclosed seeded customer; no benchmark reward',
-                  'actual_model_decisions': True, 'forced_tool_actions': False}
+                  'actual_model_decisions': True, 'forced_tool_actions': False,
+                  'generation_failure': generation_failure,
+                  'generation_config': {'max_tokens': args.max_tokens,
+                                        'max_tokens_ceiling': args.max_tokens_ceiling}}
         results.append(record)
         write(args.output / 'summary.json', results)
         print(json.dumps(record), flush=True)
@@ -77,6 +92,7 @@ def main():
     parser.add_argument('--url', default='http://127.0.0.1:8866/v1/chat/completions')
     parser.add_argument('--max-steps', type=int, default=4)
     parser.add_argument('--max-tokens', type=int, default=512)
+    parser.add_argument('--max-tokens-ceiling', type=int, default=8192)
     run(parser.parse_args())
 
 

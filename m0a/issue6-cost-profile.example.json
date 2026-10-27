@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "source_kind": "assumed",
+  "model": "DeepSeek-V4-Flash-W8A8",
+  "device": "unmeasured-logical-ranks",
+  "parallel_ranks": 1,
+  "provenance": "Teaching example only. H2D/D2H = 5 us + bytes/(16 GB/s); not device measurements. Other operations fall back to labelled assumptions.",
+  "operations": {
+    "h2d": [
+      {"size": 1024, "duration_us": 5.064},
+      {"size": 65536, "duration_us": 9.096}
+    ],
+    "d2h": [
+      {"size": 1024, "duration_us": 5.064}
+    ]
+  }
+}

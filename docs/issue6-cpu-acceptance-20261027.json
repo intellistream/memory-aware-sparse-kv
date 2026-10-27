@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "source_commit": "65f5af11565123b5ea44d3e6ba8796fa69a73c2d",
+  "issue_url": "https://github.com/intellistream/memory-aware-sparse-kv/issues/6",
+  "full_issue6_completed": false,
+  "CPU_verification_scope_completed": true,
+  "NPU_used": false,
+  "whole_model_executed": false,
+  "tests": {
+    "main_discovered": 282,
+    "main_passed": 278,
+    "main_skipped": 4,
+    "supplemental_tau3_passed": 2,
+    "unique_tests_verified": 280,
+    "remaining_unverified": [
+      "NPU state restoration test",
+      "external Stage 0 measurement recomputation"
+    ]
+  },
+  "long_context": {
+    "cases": 4,
+    "numerical_query_checks": 64,
+    "cache_output_checks": 256,
+    "max_dense_sparse_abs_error": 4.0531158447265625e-06,
+    "max_cache_output_abs_error": 0.0,
+    "loaded_weight_tensors": 26,
+    "inputs": "controlled_hidden_not_Agent"
+  },
+  "asynchronous": {
+    "scenarios": 60,
+    "audit": {
+      "artifacts": 62,
+      "rank_queries": 8656,
+      "transfers": 44035,
+      "payload_state_transitions": 22388,
+      "source_files": 121,
+      "passed": true
+    },
+    "payload_validation": {
+      "scope": "actual_BF16_payloads_through_async_cache_then_actual_attention",
+      "inputs": "controlled_hidden_not_full_model",
+      "reports": [
+        {
+          "strategy": "none",
+          "queries": 8,
+          "max_output_abs_error": 0.0,
+          "output_equal_to_archived_real_weight_CPU": true,
+          "total_h2d_bytes": 1692672
+        },
+        {
+          "strategy": "global_frequency",
+          "queries": 8,
+          "max_output_abs_error": 0.0,
+          "output_equal_to_archived_real_weight_CPU": true,
+          "total_h2d_bytes": 2203648
+        }
+      ],
+      "weight_receipts_verified": 26
+    },
+    "costs_measured": false,
+    "metrics_are_TPOT": false
+  },
+  "benchmark": {
+    "tasks": 211,
+    "split_statistics": {
+      "component_count": 84,
+      "split_counts": {
+        "train": 127,
+        "validation": 42,
+        "test": 42
+      },
+      "three_nonempty_partitions": true,
+      "balancing_never_splits_component": true
+    },
+    "per_domain": {
+      "banking_knowledge": {
+        "tasks": 97,
+        "partitions": {
+          "train": 52,
+          "test": 9,
+          "validation": 36
+        },
+        "template_proxies": 71
+      },
+      "retail": {
+        "tasks": 114,
+        "partitions": {
+          "train": 75,
+          "test": 33,
+          "validation": 6
+        },
+        "template_proxies": 76
+      }
+    },
+    "candidate_pair_count": 17,
+    "template_semantics_reviewed": false,
+    "Agent_executed": false
+  },
+  "remaining": [
+    "semantic task-family/variant review and solvability",
+    "native DeepSeek Agent traces and generalization",
+    "Ascend operator/transfer/HCCL calibration with held-out error",
+    "physical asynchronous KV integration without device shadow",
+    "full-model outputs and eight-NPU TTFT/TPOT/memory acceptance"
+  ],
+  "evidence_sha256": {
+    "readiness.json": "69a7fa0144d5948596e8516859535b16af13c5f6876177bfe74d0b09e0828a68",
+    "full-tests-r03.log": "13fbed2619b4ccc6cf4a0993eb8b8d169a4ffc914a44b80c91840b645d09103a",
+    "tau3-supplemental-tests.log": "a1bd7fff29889dca7dbbd5cc9b5da1ea34b47834dfa0380ca8a9e1f28b0d86b0",
+    "benchmark-split-audit.json": "d34447cc26346a0e78072b8afee148624b4e8790fe2c48ecbff893f86bee2186",
+    "long-context-r01/manifest.json": "0662b5738b0ed61dfba4a6dcda1068e132989b978e9e30d4a0aa66c7d39685a7",
+    "async-study-r01/manifest.json": "566651b1de035604598e4cf84c1765c342743d6fefa73978a1a50fd19d91752b",
+    "async-study-r01/audit.json": "8aa3e48e2c62b86b306d139c6be14fe4bbeb90c96f9d12f3cafce6fb254bb457"
+  }
+}

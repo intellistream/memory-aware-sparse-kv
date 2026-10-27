@@ -36,6 +36,8 @@ def split_tasks(tasks, count=6):
 
 
 def run(args):
+    require(0 < args.max_tokens <= args.max_tokens_ceiling, 'Invalid generation budget range')
+    require(args.episode_timeout > 0, 'Invalid episode timeout')
     args.output.mkdir(parents=True, exist_ok=False)
     verified = verify_tau(args.tau_source)
     tasks = verified.pop('tasks')
@@ -77,7 +79,9 @@ def run(args):
                     episode = collect_episode(domain, task, args.output / (name + '.jsonl'),
                         model='glm-tiny', url=args.url, max_steps=args.max_steps,
                         max_tokens=args.max_tokens, require_success=False,
-                        chat_template_kwargs={'reasoning_effort': args.reasoning_effort})
+                        chat_template_kwargs={'reasoning_effort': args.reasoning_effort},
+                        max_tokens_ceiling=args.max_tokens_ceiling,
+                        episode_timeout=args.episode_timeout)
                     episode['agent_tool_calls'] = sum(e['requestor'] == 'assistant' for e in episode['events'])
                     episode['successful_agent_tool_calls'] = sum(e['requestor'] == 'assistant' and not e['error']
                                                                  for e in episode['events'])
@@ -85,8 +89,11 @@ def run(args):
                     write(args.output / (name + '-episode.json'), episode)
                     episodes.append({k: v for k, v in episode.items() if k not in {'messages', 'events'}})
                 except Exception as error:
-                    episodes.append({'domain': domain, 'task_id': task.id, 'status': 'failed',
-                                     'error': f'{type(error).__name__}: {error}'})
+                    failure = {'domain': domain, 'task_id': task.id, 'status': 'failed',
+                               'error': f'{type(error).__name__}: {error}'}
+                    if hasattr(error, 'details'):
+                        failure['generation_failure'] = error.details
+                    episodes.append(failure)
                 write(args.output / 'episodes.json', episodes)
                 print(json.dumps(episodes[-1]), flush=True)
     validate_dataset(rows)
@@ -102,6 +109,8 @@ def run(args):
                 'user_simulator': 'same GLM tiny; reliability must be assessed separately',
                 'official_benchmark_reward_computed': False,
                 'generation_config': {'max_steps': args.max_steps, 'max_tokens': args.max_tokens,
+                                      'max_tokens_ceiling': args.max_tokens_ceiling,
+                                      'episode_timeout': args.episode_timeout,
                                       'reasoning_effort': args.reasoning_effort},
                 'variant_scope': 'read-only distractor context; source task, policy, DB and actions unchanged',
                 'limitations': ['bounded capability run, not a benchmark score',
@@ -135,7 +144,9 @@ def main():
     parser.add_argument('--url', default='http://127.0.0.1:8866/v1/chat/completions')
     parser.add_argument('--tasks-per-domain', type=int, default=6)
     parser.add_argument('--max-steps', type=int, default=8)
-    parser.add_argument('--max-tokens', type=int, default=128)
+    parser.add_argument('--max-tokens', type=int, default=512)
+    parser.add_argument('--max-tokens-ceiling', type=int, default=8192)
+    parser.add_argument('--episode-timeout', type=int, default=900)
     parser.add_argument('--dataset-only', action='store_true')
     parser.add_argument('--reasoning-effort', choices=('low', 'high', 'max'), default='low')
     print(json.dumps(run(parser.parse_args()), indent=2))
